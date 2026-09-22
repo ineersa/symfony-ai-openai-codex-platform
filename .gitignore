@@ -1,0 +1,4 @@
+/vendor/
+/var/
+/.php-cs-fixer.cache
+/.castor.stub.php

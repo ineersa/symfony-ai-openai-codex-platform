@@ -1,0 +1,10 @@
+includes:
+    - vendor/phpstan/phpstan-phpunit/extension.neon
+parameters:
+    level: 6
+    # Provider payloads are untrusted even when upstream PHPDoc promises a shape.
+    treatPhpDocTypesAsCertain: false
+    paths:
+        - src
+        - tests
+    tmpDir: var/phpstan

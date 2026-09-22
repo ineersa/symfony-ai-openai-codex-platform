@@ -1,0 +1,39 @@
+{
+    "name": "ineersa/symfony-ai-openai-codex-platform",
+    "description": "OpenAI Codex subscription transport and optional OAuth command for Symfony AI.",
+    "type": "library",
+    "license": "MIT",
+    "require": {
+        "php": ">=8.5",
+        "ext-mbstring": "*",
+        "amphp/amp": "^3.1",
+        "amphp/http": "^2.1",
+        "amphp/websocket-client": "^2.0",
+        "psr/log": "^3.0",
+        "symfony/ai-platform": "^0.12",
+        "symfony/ai-open-responses-platform": "^0.12",
+        "symfony/clock": "^8.0",
+        "symfony/http-client": "^8.0",
+        "symfony/http-client-contracts": "^3.0",
+        "symfony/event-dispatcher-contracts": "^3.0",
+        "symfony/serializer": "^8.0",
+        "symfony/uid": "^8.0"
+    },
+    "require-dev": {
+        "friendsofphp/php-cs-fixer": "^3.94",
+        "league/oauth2-client": "^2.8",
+        "phpstan/phpstan": "^2.1",
+        "phpstan/phpstan-phpunit": "^2.0",
+        "phpunit/phpunit": "^13.2",
+        "symfony/console": "^8.1",
+        "symfony/process": "^8.0"
+    },
+    "suggest": {
+        "league/oauth2-client": "^2.8, required for optional Codex OAuth login and refresh",
+        "symfony/console": "^8.1, required for the optional OAuth command and interactive login",
+        "symfony/process": "^8.0, required for optional browser launching"
+    },
+    "autoload": {"psr-4": {"Symfony\\AI\\Platform\\Bridge\\OpenAICodex\\": "src/"}},
+    "autoload-dev": {"psr-4": {"Symfony\\AI\\Platform\\Bridge\\OpenAICodex\\Tests\\": "tests/"}},
+    "prefer-stable": true
+}
