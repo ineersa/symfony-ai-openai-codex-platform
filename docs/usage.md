@@ -1,10 +1,20 @@
 # Connect an application
 
-Install the bridge:
+Until the package is published on Packagist, register its GitHub repository:
 
 ```sh
-composer require ineersa/symfony-ai-openai-codex-platform
+composer config repositories.openai-codex vcs https://github.com/ineersa/symfony-ai-openai-codex-platform
 ```
+
+Install the development branch:
+
+```sh
+composer require ineersa/symfony-ai-openai-codex-platform:dev-main
+```
+
+Commit `composer.json` and `composer.lock` to pin the installed revision.
+After a tagged release is published on Packagist, remove the VCS repository
+entry and require the published version instead of `dev-main`.
 
 Supply an access token and its matching ChatGPT account ID from your credential store:
 
