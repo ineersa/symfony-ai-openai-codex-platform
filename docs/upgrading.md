@@ -1,6 +1,6 @@
 # Upgrade from the in-tree bridge
 
-This extraction targets Symfony AI `^0.12`. The source baseline is Hatfield commit `2715f242b`. No compatibility aliases for Hatfield classes are provided.
+This extraction supports Symfony AI `^0.12` and `^0.13`. The source baseline is Hatfield commit `2715f242b`, plus the Codex transport changes merged into Hatfield main through `35c0b069e`. No compatibility aliases for Hatfield classes are provided.
 
 1. Require the package through Composer. Remove the host PSR-4 mapping for `Symfony\AI\Platform\Bridge\OpenAICodex` and delete its in-tree bridge copy.
 2. Replace `Ineersa\Platform\Result\CancellableRawResultInterface` imports with `Symfony\AI\Platform\Bridge\OpenAICodex\Result\CancellableRawResultInterface` in cancellation consumers and tests.

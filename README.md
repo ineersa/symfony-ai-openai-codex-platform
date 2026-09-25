@@ -1,6 +1,6 @@
 # OpenAI Codex for Symfony AI
 
-A Composer library for the ChatGPT subscription Codex Responses endpoint. Requires PHP 8.5 or later and Symfony AI `^0.12`. This is an independent package, not an official Symfony or OpenAI bridge.
+A Composer library for the ChatGPT subscription Codex Responses endpoint. Requires PHP 8.5 or later and Symfony AI `^0.12` or `^0.13`. This is an independent package, not an official Symfony or OpenAI bridge.
 
 The bridge supports SSE, WebSocket, and session-cached WebSocket transports. The optional `Auth` component provides Codex OAuth PKCE login and refresh. Neither the transport nor credential records depend on Hatfield.
 
