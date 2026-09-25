@@ -37,11 +37,15 @@ final class CodexToolCallNormalizer extends ModelContractNormalizer
     public function normalize(mixed $data, ?string $format = null, array $context = []): array
     {
         $parts = CodexResponsesToolCallId::split($data->getId());
+        $arguments = $data->getArguments();
 
+        // ToolCall cannot distinguish an empty JSON object from an empty array.
+        // Function-call arguments are objects; replay {} rather than [] to
+        // match the provider item retained for cached continuation.
         $normalized = [
             'call_id' => $parts['call_id'],
             'name' => $data->getName(),
-            'arguments' => json_encode($data->getArguments() ?? new \stdClass()),
+            'arguments' => json_encode([] === $arguments ? new \stdClass() : $arguments),
             'type' => 'function_call',
         ];
 

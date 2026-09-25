@@ -552,6 +552,32 @@ final class ResultConverterTest extends TestCase
         $this->assertSame(['city' => 'Berlin'], $toolCalls[0]->getArguments());
     }
 
+    public function testCompletedStreamRetainsZeroArgumentToolCallForReplay(): void
+    {
+        $httpResponse = $this->createStub(ResponseInterface::class);
+        $httpResponse->method('getStatusCode')->willReturn(200);
+        $events = [
+            ['type' => 'response.output_item.done', 'item' => [
+                'type' => 'function_call',
+                'id' => 'fc_zero',
+                'call_id' => 'call_zero',
+                'name' => 'task_list',
+                'arguments' => '{}',
+            ]],
+            ['type' => 'response.completed', 'response' => ['output' => []]],
+        ];
+        $result = (new ResultConverter())->convert(new InMemoryRawResult([], $events, $httpResponse), ['stream' => true]);
+        $this->assertInstanceOf(StreamResult::class, $result);
+
+        $chunks = iterator_to_array($result->getContent());
+        $this->assertCount(1, $chunks);
+        $this->assertInstanceOf(ToolCallComplete::class, $chunks[0]);
+        $call = $chunks[0]->getToolCalls()[0];
+        $this->assertSame('call_zero|fc_zero', $call->getId());
+        $this->assertSame('task_list', $call->getName());
+        $this->assertSame([], $call->getArguments());
+    }
+
     public function testStreamWithReasoningContent(): void
     {
         $converter = new ResultConverter();
