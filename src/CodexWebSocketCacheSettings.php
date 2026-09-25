@@ -9,7 +9,7 @@ namespace Symfony\AI\Platform\Bridge\OpenAICodex;
  */
 final readonly class CodexWebSocketCacheSettings
 {
-    public const int DEFAULT_IDLE_TTL_SECONDS = 300;
+    public const int DEFAULT_IDLE_TTL_SECONDS = 60;
     public const int DEFAULT_MAX_AGE_SECONDS = 3300;
 
     public function __construct(

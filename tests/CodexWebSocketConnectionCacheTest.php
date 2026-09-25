@@ -126,7 +126,7 @@ final class CodexWebSocketConnectionCacheTest extends TestCase
     {
         $clock = new MockClock(new \DateTimeImmutable('2026-07-13 20:44:00'));
         $cache = new CodexWebSocketConnectionCache(clock: $clock);
-        $settings = new CodexWebSocketCacheSettings(idleTtlSeconds: 300, maxAgeSeconds: 3300);
+        $settings = new CodexWebSocketCacheSettings();
         $identity = $this->identity('0194aaaa-bbbb-7ccc-8ddd-111111111111', 'gpt-5.6-luna');
 
         $first = $this->createMock(WebsocketConnection::class);
@@ -141,8 +141,17 @@ final class CodexWebSocketConnectionCacheTest extends TestCase
         });
         $cache->release($lease1, true);
 
-        $clock->sleep(308);
+        $clock->sleep(59);
+        $leaseWithinTtl = $cache->acquire($identity, $settings, static function () use (&$connectCount, $second): WebsocketConnection {
+            ++$connectCount;
 
+            return $second;
+        });
+        $this->assertTrue($leaseWithinTtl->reused);
+        $this->assertSame(1, $connectCount);
+        $cache->release($leaseWithinTtl, true);
+
+        $clock->sleep(60);
         $lease2 = $cache->acquire($identity, $settings, static function () use (&$connectCount, $second): WebsocketConnection {
             ++$connectCount;
 
