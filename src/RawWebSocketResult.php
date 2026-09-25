@@ -155,9 +155,9 @@ final class RawWebSocketResult implements CancellableRawResultInterface
 
             $type = $event['type'] ?? '';
 
-            // Capture finalized items as they complete. Terminal response.output
-            // is preferred when present; these are the fallback when it is not
-            // (common for tool-call turns on the WebSocket transport).
+            // Capture finalized items for both history and the continuation
+            // baseline. Reasoning encrypted_content can be incomplete before
+            // output_item.done; do not replace it with a terminal snapshot.
             if ('response.output_item.done' === $type && \is_array($event['item'] ?? null)) {
                 $this->completedOutputItems[] = $event['item'];
             }
@@ -264,20 +264,92 @@ final class RawWebSocketResult implements CancellableRawResultInterface
             return;
         }
 
+        $responseItems = $this->resolveContinuationResponseItems($response);
+        $this->logContinuationBaselineSource($response);
         $context->lease->entry->continuation = CodexWebSocketContinuationState::fromSuccessfulResponse(
             $context->fullRequestBody,
             $responseId,
-            $this->resolveContinuationResponseItems($response),
+            $responseItems,
         );
     }
 
     /**
-     * Prefer canonical terminal response.output when populated; otherwise use
-     * completed response.output_item.done items accumulated during the stream.
+     * Record where the continuation baseline came from. When both sources have
+     * the same number of items, compare them by position without logging data.
+     * A difference here is a lead, not proof that the next history item differs.
      *
-     * When terminal output is present it is authoritative — do not merge with
-     * streamed items, which would duplicate function_call/message/reasoning
-     * entries already listed there.
+     * @param array<string, mixed> $response
+     */
+    private function logContinuationBaselineSource(array $response): void
+    {
+        $terminalOutput = $response['output'] ?? null;
+        $terminalItems = \is_array($terminalOutput) ? array_values(array_filter($terminalOutput, 'is_array')) : [];
+        $source = [] !== $this->completedOutputItems ? 'streamed' : 'terminal';
+        $streamedCount = \count($this->completedOutputItems);
+        $terminalCount = \count($terminalItems);
+        $comparison = 'unavailable';
+        $mismatch = null;
+        $reasoningPairs = 0;
+        $reasoningIdEqualPairs = 0;
+        $reasoningEncryptedEqualPairs = 0;
+        $reasoningEncryptedLengthMismatchPairs = 0;
+
+        if ($terminalCount > 0 && $streamedCount > 0) {
+            $comparison = 'different_count';
+            if ($terminalCount === $streamedCount) {
+                $mismatch = CodexWebSocketContinuationComparator::describePrefixMismatch($terminalItems, $this->completedOutputItems);
+                $comparison = $mismatch['prefix_normalized_equal'] ? 'equal' : 'different';
+                foreach ($terminalItems as $index => $terminalItem) {
+                    $streamedItem = $this->completedOutputItems[$index] ?? null;
+                    if (!\is_array($terminalItem) || !\is_array($streamedItem)) {
+                        continue;
+                    }
+                    if ('reasoning' !== ($terminalItem['type'] ?? null) || 'reasoning' !== ($streamedItem['type'] ?? null)) {
+                        continue;
+                    }
+                    ++$reasoningPairs;
+                    $terminalId = $terminalItem['id'] ?? null;
+                    $streamedId = $streamedItem['id'] ?? null;
+                    if (\is_string($terminalId) && '' !== $terminalId && \is_string($streamedId) && '' !== $streamedId && $terminalId === $streamedId) {
+                        ++$reasoningIdEqualPairs;
+                    }
+                    $terminalEncrypted = $terminalItem['encrypted_content'] ?? null;
+                    $streamedEncrypted = $streamedItem['encrypted_content'] ?? null;
+                    if (\is_string($terminalEncrypted) && \is_string($streamedEncrypted)) {
+                        if ($terminalEncrypted === $streamedEncrypted) {
+                            ++$reasoningEncryptedEqualPairs;
+                        } elseif (\strlen($terminalEncrypted) !== \strlen($streamedEncrypted)) {
+                            ++$reasoningEncryptedLengthMismatchPairs;
+                        }
+                    }
+                }
+            }
+        }
+
+        $this->logger->info('codex.websocket.continuation.baseline', [
+            'event_type' => 'codex.websocket.continuation.baseline',
+            'component' => 'raw_websocket_result',
+            'baseline_source' => $source,
+            'terminal_output_count' => $terminalCount,
+            'streamed_done_count' => $streamedCount,
+            'source_comparison' => $comparison,
+            'first_mismatch_index' => $mismatch['first_mismatch_index'] ?? null,
+            'left_item_kind' => $mismatch['left_item_kind'] ?? null,
+            'right_item_kind' => $mismatch['right_item_kind'] ?? null,
+            'mismatch_field_path' => $mismatch['mismatch_field_path'] ?? null,
+            'mismatch_relation' => $mismatch['mismatch_relation'] ?? null,
+            'reasoning_pair_count' => $reasoningPairs,
+            'reasoning_id_equal_pair_count' => $reasoningIdEqualPairs,
+            'reasoning_encrypted_equal_pair_count' => $reasoningEncryptedEqualPairs,
+            'reasoning_encrypted_length_mismatch_pair_count' => $reasoningEncryptedLengthMismatchPairs,
+        ]);
+    }
+
+    /**
+     * Use completed response.output_item.done items, as ResultConverter does
+     * for history. Fall back to terminal response.output when none were sent.
+     *
+     * Never merge the sources: both may contain the same output items.
      *
      * @param array<string, mixed> $response
      *
@@ -285,6 +357,10 @@ final class RawWebSocketResult implements CancellableRawResultInterface
      */
     private function resolveContinuationResponseItems(array $response): array
     {
+        if ([] !== $this->completedOutputItems) {
+            return $this->completedOutputItems;
+        }
+
         $output = $response['output'] ?? [];
         if (!\is_array($output)) {
             $output = [];
@@ -297,11 +373,7 @@ final class RawWebSocketResult implements CancellableRawResultInterface
             }
         }
 
-        if ([] !== $items) {
-            return $items;
-        }
-
-        return $this->completedOutputItems;
+        return $items;
     }
 
     private function finalizeCachedLifecycle(bool $success): void

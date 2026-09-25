@@ -15,6 +15,9 @@ final class CodexWebSocketCacheEntry
 
     public ?CodexWebSocketContinuationState $continuation = null;
 
+    /** Durable session history generation last seen by this process-local entry. */
+    public ?int $continuationGeneration = null;
+
     /** Timestamp when the entry last became idle after a successful cached lease release; null while busy or before first release. */
     public ?int $idleSince = null;
 

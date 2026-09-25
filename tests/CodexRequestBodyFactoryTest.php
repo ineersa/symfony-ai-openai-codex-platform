@@ -55,7 +55,7 @@ final class CodexRequestBodyFactoryTest extends TestCase
         $state = CodexWebSocketContinuationState::fromSuccessfulResponse($first, 'resp-1', []);
         $repeated = $factory->build($model, ['input' => $first['input']], ['reasoning' => ['effort' => 'medium']]);
 
-        $this->assertSame(['previous_response_id' => 'resp-1', 'input' => []], $state->buildDeltaRequest($repeated));
+        $this->assertSame(['previous_response_id' => 'resp-1', 'input' => []], $state->decide($repeated)->delta);
     }
 
     public function testNonAstraShapingIsUnchanged(): void

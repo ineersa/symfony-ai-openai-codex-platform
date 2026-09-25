@@ -32,56 +32,50 @@ final class CodexAssistantMessageNormalizer extends ModelContractNormalizer impl
      */
     public function normalize(mixed $data, ?string $format = null, array $context = []): array
     {
-        $text = '';
-        $thinkingSignature = null;
         $preserveNativeItemIds = true === $data->getMetadata()->get(
             'preserve_native_item_ids',
             true,
         );
 
+        $output = [];
+        $pendingText = '';
+
         foreach ($data->getContent() as $part) {
             if ($part instanceof Text) {
-                $text .= $part->getText();
+                $pendingText .= $part->getText();
+                continue;
             }
 
             if ($part instanceof Thinking) {
                 $sig = $part->getSignature();
                 if (\is_string($sig) && '' !== $sig) {
-                    $thinkingSignature = $sig;
-                }
-            }
-        }
-
-        $output = [];
-
-        if (null !== $thinkingSignature) {
-            $output[] = json_decode($thinkingSignature, true, flags: \JSON_THROW_ON_ERROR);
-        }
-
-        if ('' !== $text) {
-            $output[] = [
-                'role' => $data->getRole()->value,
-                'type' => 'message',
-                'content' => [
-                    ['type' => 'output_text', 'text' => $text],
-                ],
-            ];
-        }
-
-        if ($data->hasToolCalls()) {
-            /** @var list<ToolCall> $toolCalls */
-            $toolCalls = $data->getToolCalls();
-            $normalizedToolCalls = $this->normalizer->normalize($toolCalls, $format, $context);
-            if (\is_array($normalizedToolCalls) && array_is_list($normalizedToolCalls)) {
-                foreach ($normalizedToolCalls as $toolCall) {
-                    if (\is_array($toolCall)) {
-                        if (!$preserveNativeItemIds) {
-                            unset($toolCall['id']);
-                        }
-                        $output[] = $toolCall;
+                    if ('' !== $pendingText) {
+                        $output[] = $this->messageItem($data, $pendingText);
+                        $pendingText = '';
                     }
+                    $output[] = json_decode($sig, true, flags: \JSON_THROW_ON_ERROR);
+                }
+                continue;
+            }
+
+            if ($part instanceof ToolCall) {
+                if ('' !== $pendingText) {
+                    $output[] = $this->messageItem($data, $pendingText);
+                    $pendingText = '';
+                }
+
+                $normalizedToolCall = $this->normalizer->normalize($part, $format, $context);
+                if (\is_array($normalizedToolCall)) {
+                    if (!$preserveNativeItemIds) {
+                        unset($normalizedToolCall['id']);
+                    }
+                    $output[] = $normalizedToolCall;
                 }
             }
+        }
+
+        if ('' !== $pendingText) {
+            $output[] = $this->messageItem($data, $pendingText);
         }
 
         if ([] === $output) {
@@ -99,5 +93,19 @@ final class CodexAssistantMessageNormalizer extends ModelContractNormalizer impl
     protected function supportsModel(Model $model): bool
     {
         return $model instanceof CodexModel;
+    }
+
+    /**
+     * @return array{role: string, type: 'message', content: list<array{type: 'output_text', text: string}>}
+     */
+    private function messageItem(AssistantMessage $data, string $text): array
+    {
+        return [
+            'role' => $data->getRole()->value,
+            'type' => 'message',
+            'content' => [
+                ['type' => 'output_text', 'text' => $text],
+            ],
+        ];
     }
 }

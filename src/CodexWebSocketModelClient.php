@@ -175,7 +175,10 @@ final class CodexWebSocketModelClient implements ModelClientInterface
 
         $useCache = CodexTransportEnum::WebsocketCached === $this->transport
             && null !== $this->connectionCache
-            && CodexCorrelationProvenance::Generated !== $resolution->provenance;
+            && CodexCorrelationProvenance::Generated !== $resolution->provenance
+            // Summarization is a separate request: a rejected summary must not
+            // replace the chat continuation with the summarization response.
+            && true !== ($bodyOptions[CodexRequestBodyFactory::CONTINUATION_RESET] ?? false);
 
         if (!$useCache) {
             [$connection, $effectiveRequestId, $effectiveProvenance] = $this->connectWithOptional401Refresh(
@@ -217,10 +220,29 @@ final class CodexWebSocketModelClient implements ModelClientInterface
         $fullBody = $this->buildFullRequestBody($model, $bodyPayload, $bodyOptions, $effectiveRequestId, $effectiveProvenance);
         // Resume can choose the old baseline again even though the server's
         // effective effort changed. Do not inherit that prior response state.
-        if ('gpt-6-astra' === $model->getName()
-            && true === ($bodyOptions[CodexRequestBodyFactory::REASONING_RESET] ?? false)
+        // REASONING_RESET is only set for models whose catalog entry carries
+        // supports_reasoning_configuration_updates.
+        // The durable generation lets each worker discard its own pre-compaction
+        // continuation, even after another worker has already handled a turn.
+        $generation = $bodyOptions[CodexRequestBodyFactory::CONTINUATION_GENERATION] ?? null;
+        if (null !== $lease->entry && \is_int($generation)) {
+            if (null !== $lease->entry->continuation && ($lease->entry->continuationGeneration ?? 0) !== $generation) {
+                $lease->entry->continuation = null;
+            }
+            $lease->entry->continuationGeneration = $generation;
+        }
+        // Supported in-band reasoning epochs also start fresh.
+        if (true === ($bodyOptions[CodexRequestBodyFactory::REASONING_RESET] ?? false)
             && null !== $lease->entry) {
             $lease->entry->continuation = null;
+        }
+        if (null !== $lease->entry?->continuation
+            && $lease->entry->continuation->requiresFreshChainForTools($fullBody)) {
+            $lease->entry->continuation = null;
+            $this->logger->info('codex.websocket.continuation.tools_changed', [
+                'event_type' => 'codex.websocket.continuation.tools_changed',
+                'component' => 'codex_websocket_model_client',
+            ]);
         }
         $wireBody = $this->buildWireRequestBody($lease, $fullBody);
 
@@ -265,28 +287,35 @@ final class CodexWebSocketModelClient implements ModelClientInterface
      */
     private function buildWireRequestBody(CodexWebSocketCacheLease $lease, array $fullBody): array
     {
+        $keyContext = CodexWebSocketContinuationDecision::promptCacheKeyContext($fullBody);
+
         if ($lease->oneShot || null === $lease->entry || null === $lease->entry->continuation) {
             $this->logger->info('codex.websocket.continuation.full_context', [
                 'event_type' => 'codex.websocket.continuation.full_context',
                 'component' => 'codex_websocket_model_client',
                 'reason' => $lease->oneShot ? 'busy_one_shot' : 'no_continuation',
+                'prompt_cache_key_present' => $keyContext['prompt_cache_key_present'],
+                'prompt_cache_key_fp' => $keyContext['prompt_cache_key_fp'],
+                'prompt_cache_key_length' => $keyContext['prompt_cache_key_length'],
+                'current_input_count' => \is_array($fullBody['input'] ?? null) ? \count($fullBody['input']) : 0,
             ]);
 
             return $fullBody;
         }
 
-        $delta = $lease->entry->continuation->buildDeltaRequest($fullBody);
-        if (null === $delta) {
-            $lease->entry->continuation = null;
-            $this->logger->info('codex.websocket.continuation.full_context', [
-                'event_type' => 'codex.websocket.continuation.full_context',
+        $decision = $lease->entry->continuation->decide($fullBody);
+        if (null === $decision->delta) {
+            $this->logger->error('codex.websocket.continuation.mismatch', [
+                'event_type' => 'codex.websocket.continuation.mismatch',
                 'component' => 'codex_websocket_model_client',
-                'reason' => 'divergent_input',
+                ...$decision->toLogContext(),
             ]);
+            $this->failOutboundTransport($lease->connection, $lease, 'continuation_mismatch');
 
-            return $fullBody;
+            throw new CodexWebSocketContinuationMismatchException($decision->reason);
         }
 
+        $delta = $decision->delta;
         $wireBody = $fullBody;
         $wireBody['previous_response_id'] = $delta['previous_response_id'];
         $wireBody['input'] = $delta['input'];
@@ -296,7 +325,7 @@ final class CodexWebSocketModelClient implements ModelClientInterface
         $this->logger->info('codex.websocket.continuation.delta', [
             'event_type' => 'codex.websocket.continuation.delta',
             'component' => 'codex_websocket_model_client',
-            'delta_input_count' => \count($delta['input']),
+            ...$decision->toLogContext(),
         ]);
 
         return $wireBody;
@@ -400,6 +429,7 @@ final class CodexWebSocketModelClient implements ModelClientInterface
             'has_store' => isset($jsonBody['store']),
             'has_stream' => isset($jsonBody['stream']),
             'has_previous_response_id' => isset($jsonBody['previous_response_id']),
+            ...CodexWebSocketContinuationDecision::promptCacheKeyContext($jsonBody),
             'cache_reused' => null !== $lease && $lease->reused,
             'cache_one_shot' => null !== $lease && $lease->oneShot,
             'originator' => $this->originator,
