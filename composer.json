@@ -13,6 +13,7 @@
         "symfony/ai-platform": "^0.12 || ^0.13",
         "symfony/ai-open-responses-platform": "^0.12 || ^0.13",
         "symfony/clock": "^8.0",
+        "symfony/filesystem": "^8.0",
         "symfony/http-client": "^8.0",
         "symfony/http-client-contracts": "^3.0",
         "symfony/event-dispatcher-contracts": "^3.0",

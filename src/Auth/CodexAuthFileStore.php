@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Symfony\AI\Platform\Bridge\OpenAICodex\Auth;
 
+use Symfony\Component\Filesystem\Filesystem;
 use Symfony\Component\Lock\LockFactory;
 use Symfony\Component\Lock\Store\FlockStore;
 
@@ -91,43 +92,20 @@ final class CodexAuthFileStore implements CodexAuthRefreshStorageInterface
     /** @param array<string, mixed> $data */
     private function writeAll(array $data): void
     {
+        $filesystem = new Filesystem();
         $directory = \dirname($this->path);
-        if (!is_dir($directory) && !@mkdir($directory, 0700, true) && !is_dir($directory)) {
-            throw new \RuntimeException(\sprintf('Cannot create credentials directory at %s.', $directory));
-        }
-
-        $temp = $this->path.'.tmp.'.bin2hex(random_bytes(8));
-        $stream = @fopen($temp, 'x');
-        if (false === $stream) {
-            throw new \RuntimeException(\sprintf('Cannot create temporary credentials file at %s.', $this->path));
-        }
+        $filesystem->mkdir($directory, 0700);
+        $temp = $filesystem->tempnam($directory, 'codex-auth-');
 
         try {
-            if (!@chmod($temp, 0600)) {
-                throw new \RuntimeException('Cannot protect temporary credentials file.');
-            }
-
+            // dumpFile copies the target's mode onto its own temp file before
+            // publishing. Give it a private target, including on first write.
+            $filesystem->chmod($temp, 0600);
             $json = json_encode($data, \JSON_PRETTY_PRINT | \JSON_UNESCAPED_SLASHES | \JSON_THROW_ON_ERROR);
-            $length = \strlen($json);
-            for ($offset = 0; $offset < $length; $offset += $written) {
-                $written = @fwrite($stream, substr($json, $offset));
-                if (false === $written || 0 === $written) {
-                    throw new \RuntimeException('Cannot write credentials file.');
-                }
-            }
-            if (!@fflush($stream) || !@fclose($stream)) {
-                $stream = false;
-                throw new \RuntimeException('Cannot flush credentials file.');
-            }
-            $stream = false;
-            if (!@rename($temp, $this->path)) {
-                throw new \RuntimeException(\sprintf('Cannot replace credentials file at %s.', $this->path));
-            }
+            $filesystem->dumpFile($temp, $json);
+            $filesystem->rename($temp, $this->path, true);
         } finally {
-            if (false !== $stream) {
-                @fclose($stream);
-            }
-            @unlink($temp);
+            $filesystem->remove($temp);
         }
     }
 }

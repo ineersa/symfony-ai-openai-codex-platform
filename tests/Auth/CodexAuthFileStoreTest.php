@@ -27,6 +27,7 @@ final class CodexAuthFileStoreTest extends TestCase
             $data = json_decode((string) file_get_contents($path), true, 8, \JSON_THROW_ON_ERROR);
             $data['grok-cli'] = ['access' => 'grok-token'];
             file_put_contents($path, json_encode($data, \JSON_THROW_ON_ERROR));
+            $this->assertTrue(chmod($path, 0644));
             $store->saveCredentials(new CodexAuthRecord('new-access', 'new-refresh', time() + 3600, 'account'));
 
             $saved = json_decode((string) file_get_contents($path), true, 8, \JSON_THROW_ON_ERROR);
@@ -34,6 +35,7 @@ final class CodexAuthFileStoreTest extends TestCase
             $this->assertSame('new-access', $saved['openai-codex']['access']);
             clearstatcache(true, $path);
             $this->assertSame(0600, fileperms($path) & 0777);
+            $this->assertSame([], glob($directory.'/codex-auth-*') ?: []);
         } finally {
             @unlink($path);
             @rmdir($directory);
