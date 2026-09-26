@@ -15,8 +15,7 @@ use Symfony\AI\Platform\Message\Message;
 use Symfony\AI\Platform\Message\MessageBag;
 use Symfony\Component\Uid\Uuid;
 
-$home = getenv('HOME') ?: throw new RuntimeException('HOME is not set.');
-$credentials = (new CodexAuthFileStore($home.'/.hatfield/auth.json'))->loadCredentialsRaw();
+$credentials = (new CodexAuthFileStore(__DIR__.'/var/codex/auth.json'))->loadCredentialsRaw();
 if (null === $credentials || $credentials->isExpired()) {
 	throw new RuntimeException('Run php codex.php auth:codex first.');
 }

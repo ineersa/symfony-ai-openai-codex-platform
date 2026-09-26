@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Symfony\AI\Platform\Bridge\OpenAICodex\Auth;
 
+use Psr\Log\LoggerInterface;
 use Symfony\Component\Filesystem\Filesystem;
 use Symfony\Component\Lock\LockFactory;
 use Symfony\Component\Lock\Store\FlockStore;
@@ -13,8 +14,12 @@ final class CodexAuthFileStore implements CodexAuthRefreshStorageInterface
 {
     private readonly LockFactory $lockFactory;
 
-    public function __construct(private readonly string $path, ?LockFactory $lockFactory = null)
-    {
+    public function __construct(
+        private readonly string $path,
+        ?LockFactory $lockFactory = null,
+        private readonly ?CodexTokenRefresher $tokenRefresher = null,
+        private readonly ?LoggerInterface $logger = null,
+    ) {
         // Supply the same factory as other writers of the file when sharing auth.json.
         $this->lockFactory = $lockFactory ?? new LockFactory(new FlockStore());
     }
@@ -24,6 +29,44 @@ final class CodexAuthFileStore implements CodexAuthRefreshStorageInterface
         $entry = $this->readAll()[CodexOAuthConfig::PROVIDER_KEY] ?? null;
 
         return \is_array($entry) ? CodexAuthRecord::fromArray($entry) : null;
+    }
+
+    /** Load credentials and refresh an expired record under the shared file lock. */
+    public function loadCredentials(): ?CodexAuthRecord
+    {
+        $lock = $this->lockFactory->createLock('auth.json');
+        $lock->acquire(true);
+
+        try {
+            $data = $this->readAll();
+            $entry = $data[CodexOAuthConfig::PROVIDER_KEY] ?? null;
+            if (!\is_array($entry)) {
+                return null;
+            }
+
+            $record = CodexAuthRecord::fromArray($entry);
+            if (!$record->isExpired() || null === $this->tokenRefresher) {
+                return $record;
+            }
+
+            try {
+                $fresh = $this->tokenRefresher->refresh($record->refresh, $record->accountId);
+                $data[CodexOAuthConfig::PROVIDER_KEY] = $fresh->toArray();
+                $this->writeAll($data);
+
+                return $fresh;
+            } catch (\Throwable $e) {
+                $this->logger?->warning('Codex token refresh failed for expired record', [
+                    'provider_key' => CodexOAuthConfig::PROVIDER_KEY,
+                    'component' => 'codex_auth_storage',
+                    'event_type' => 'codex_token_refresh_failed',
+                ]);
+
+                throw new \RuntimeException('Stored Codex credentials have expired and could not be refreshed. Run bin/console auth:codex to re-authenticate.', previous: $e);
+            }
+        } finally {
+            $lock->release();
+        }
     }
 
     public function saveCredentials(CodexAuthRecord $record): void

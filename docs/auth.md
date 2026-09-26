@@ -1,10 +1,6 @@
 # Set up Codex login
 
-The optional OAuth command logs in to a ChatGPT account with Codex access. Install its Console, browser, and OAuth dependencies:
-
-```sh
-composer require league/oauth2-client:^2.8 symfony/console:^8.1 symfony/process:^8.0
-```
+The OAuth command logs in to a ChatGPT account with Codex access. Its dependencies install with the package.
 
 For a runnable login and first request, start with the [README](../README.md). To register the command in an existing Symfony Console application, supply a credential path:
 

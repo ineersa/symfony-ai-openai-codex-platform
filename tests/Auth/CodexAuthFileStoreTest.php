@@ -91,4 +91,66 @@ final class CodexAuthFileStoreTest extends TestCase
             @rmdir($directory);
         }
     }
+
+    public function testExpiredRecordRefreshesOnceAndPreservesSibling(): void
+    {
+        $directory = sys_get_temp_dir().'/codex-auth-'.bin2hex(random_bytes(8));
+        $path = $directory.'/auth.json';
+        try {
+            $store = new CodexAuthFileStore($path);
+            $store->saveCredentials(new CodexAuthRecord('expired', 'old-refresh', time() - 3600, 'account'));
+            $data = json_decode((string) file_get_contents($path), true, 8, \JSON_THROW_ON_ERROR);
+            $data['grok-cli'] = ['access' => 'grok-access'];
+            file_put_contents($path, json_encode($data, \JSON_THROW_ON_ERROR));
+
+            $refresher = new class extends CodexTokenRefresher {
+                public int $calls = 0;
+
+                public function refresh(string $refreshToken, string $expectedAccountId): CodexAuthRecord
+                {
+                    ++$this->calls;
+                    TestCase::assertSame('old-refresh', $refreshToken);
+
+                    return new CodexAuthRecord('fresh', 'new-refresh', time() + 3600, $expectedAccountId);
+                }
+            };
+            $refreshingStore = new CodexAuthFileStore($path, tokenRefresher: $refresher);
+            $this->assertSame('expired', $refreshingStore->loadCredentialsRaw()?->access);
+            $this->assertSame('fresh', $refreshingStore->loadCredentials()->access);
+            $this->assertSame('fresh', $refreshingStore->loadCredentials()->access);
+            $this->assertSame(1, $refresher->calls);
+            $saved = json_decode((string) file_get_contents($path), true, 8, \JSON_THROW_ON_ERROR);
+            $this->assertSame(['access' => 'grok-access'], $saved['grok-cli']);
+        } finally {
+            @unlink($path);
+            @rmdir($directory);
+        }
+    }
+
+    public function testFailedRefreshLeavesStoredCredentialsIntact(): void
+    {
+        $directory = sys_get_temp_dir().'/codex-auth-'.bin2hex(random_bytes(8));
+        $path = $directory.'/auth.json';
+        try {
+            $store = new CodexAuthFileStore($path);
+            $store->saveCredentials(new CodexAuthRecord('expired', 'old-refresh', time() - 3600, 'account'));
+            $refresher = new class extends CodexTokenRefresher {
+                public function refresh(string $refreshToken, string $expectedAccountId): CodexAuthRecord
+                {
+                    throw new \RuntimeException('provider secret');
+                }
+            };
+            try {
+                (new CodexAuthFileStore($path, tokenRefresher: $refresher))->loadCredentials();
+                $this->fail('Expected refresh failure.');
+            } catch (\RuntimeException $e) {
+                $this->assertStringContainsString('auth:codex', $e->getMessage());
+                $this->assertStringNotContainsString('provider secret', $e->getMessage());
+            }
+            $this->assertSame('old-refresh', $store->loadCredentialsRaw()?->refresh);
+        } finally {
+            @unlink($path);
+            @rmdir($directory);
+        }
+    }
 }

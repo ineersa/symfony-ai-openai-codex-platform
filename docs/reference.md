@@ -44,6 +44,6 @@ Structured transport logs omit raw prompts, tool content, and bearer tokens. `Er
 
 `Auth\CodexAuthRecord` preserves the wire fields `type`, `access`, `refresh`, `expires`, and `accountId`. `expires` is a Unix timestamp in seconds. `isExpired()` applies a 60-second buffer by default.
 
-`Auth\CodexAuthFileStore` persists credentials at a caller-supplied path without replacing entries for other providers. Applications may implement `Auth\CodexAuthStorageInterface` for another storage backend. The host chooses whether to refresh expired credentials automatically on read. The package provides the login flow, callback handling, browser helper, manual-code parser, and account-consistent refresh.
+`Auth\CodexAuthFileStore` persists credentials at a caller-supplied path without replacing entries for other providers. With a token refresher, `loadCredentials()` refreshes expired credentials under the shared file lock. `loadCredentialsRaw()` never refreshes. Applications may implement `Auth\CodexAuthStorageInterface` for another storage backend.
 
-OAuth dependencies are optional Composer suggestions. Transport operation does not load `Auth` classes or require Console, browser launching, or a credential store.
+OAuth, Console, and browser-launch dependencies install with this package.
