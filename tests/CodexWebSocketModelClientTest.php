@@ -16,6 +16,7 @@ use Symfony\AI\Platform\Bridge\OpenAICodex\CodexWebSocketHandshakeHeadersFactory
 use Symfony\AI\Platform\Bridge\OpenAICodex\CodexWebSocketModelClient;
 use Symfony\AI\Platform\Bridge\OpenAICodex\CodexWebSocketUrlResolver;
 use Symfony\AI\Platform\Bridge\OpenAICodex\RawWebSocketResult;
+use Symfony\AI\Platform\Bridge\OpenAICodex\Tests\Support\TestLogger;
 
 final class CodexWebSocketModelClientTest extends TestCase
 {
@@ -86,12 +87,13 @@ final class CodexWebSocketModelClientTest extends TestCase
         $connection = $this->createMock(WebsocketConnection::class);
         $connection->expects($this->once())
             ->method('sendText')
-            ->willThrowException(new \RuntimeException('send failed'));
+            ->willThrowException(new \RuntimeException('send failed for Bearer sk-test'));
         $connection->expects($this->once())->method('close');
 
         $connector = $this->createStub(CodexWebSocketConnectorInterface::class);
         $connector->method('connect')->willReturn($connection);
 
+        $logger = new TestLogger();
         $client = new CodexWebSocketModelClient(
             $connector,
             new CodexWebSocketUrlResolver(),
@@ -100,6 +102,7 @@ final class CodexWebSocketModelClientTest extends TestCase
             'https://chatgpt.com/backend-api',
             'access',
             'acct-1',
+            logger: $logger,
         );
 
         try {
@@ -111,6 +114,13 @@ final class CodexWebSocketModelClientTest extends TestCase
         } catch (\RuntimeException $e) {
             $this->assertSame('Codex WebSocket request frame could not be sent.', $e->getMessage());
         }
+
+        $failureLogs = array_values(array_filter(
+            $logger->records,
+            static fn (array $record): bool => 'codex.websocket.io_failure' === $record['message'],
+        ));
+        $this->assertCount(1, $failureLogs);
+        $this->assertSame('send failed for Bearer <redacted>', $failureLogs[0]['context']['exception_message']);
     }
 
     public function testHandshake401RefreshesOnceAndRetriesWithNewBearerAndRequestIds(): void

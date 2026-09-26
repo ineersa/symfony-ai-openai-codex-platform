@@ -11,6 +11,7 @@ use Amp\Websocket\Client\WebsocketConnectException;
 use Amp\Websocket\Client\WebsocketConnection;
 use Psr\Log\LoggerInterface;
 use Psr\Log\NullLogger;
+use Symfony\AI\Platform\Bridge\OpenAICodex\Error\ProviderDiagnosticSanitizer;
 use Symfony\AI\Platform\Exception\InvalidArgumentException;
 use Symfony\AI\Platform\Model;
 use Symfony\AI\Platform\ModelClientInterface;
@@ -137,6 +138,7 @@ final class CodexWebSocketModelClient implements ModelClientInterface
                 'cache_one_shot' => null !== $lease && $lease->oneShot,
                 'delivery_status' => 'failed',
                 'exception_class' => $e::class,
+                'exception_message' => ProviderDiagnosticSanitizer::sanitize($e->getMessage()),
             ]);
 
             throw new \RuntimeException('Codex WebSocket request frame could not be sent.', previous: $e);

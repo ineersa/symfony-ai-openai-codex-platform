@@ -8,6 +8,7 @@ use Amp\ByteStream\ReadableIterableStream;
 use Amp\CancelledException;
 use Amp\Pipeline\Queue;
 use Amp\Websocket\Client\WebsocketConnection;
+use Amp\Websocket\WebsocketCloseInfo;
 use Amp\Websocket\WebsocketMessage;
 use PHPUnit\Framework\TestCase;
 use Revolt\EventLoop;
@@ -511,5 +512,34 @@ final class RawWebSocketResultTest extends TestCase
         $this->assertSame(CodexWebSocketContinuationDecision::REASON_PREFIX_MISMATCH, $terminalHistoryDecision->reason);
         $this->assertSame('encrypted_content', $terminalHistoryDecision->mismatchFieldPath);
         $this->assertSame('different', $terminalHistoryDecision->mismatchRelation);
+    }
+
+    public function testConnectionClosedWithoutTerminalSurfacesCloseCodeAndRedactsCredentials(): void
+    {
+        $connection = $this->createMock(WebsocketConnection::class);
+        $connection->expects($this->once())->method('receive')->willReturn(null);
+        $connection->method('getCloseInfo')
+            ->willReturn(new WebsocketCloseInfo(1011, 'Incorrect API key provided: sk-test', 0.0, true));
+        $connection->expects($this->once())->method('close');
+
+        $logger = new TestLogger();
+        $raw = new RawWebSocketResult($connection, 5.0, $logger);
+
+        try {
+            iterator_to_array($raw->getDataStream());
+            $this->fail('Expected connection closed exception');
+        } catch (\RuntimeException $e) {
+            $this->assertSame(
+                'Codex WebSocket connection closed before response.completed (close code 1011, reason: Incorrect API key provided: <redacted>).',
+                $e->getMessage(),
+            );
+            $this->assertStringNotContainsString('sk-test', $e->getMessage());
+        }
+
+        $this->assertCount(1, $logger->records);
+        $this->assertSame('codex.websocket.stream_closed', $logger->records[0]['message']);
+        $this->assertSame('warning', $logger->records[0]['level']);
+        $this->assertSame(1011, $logger->records[0]['context']['close_code']);
+        $this->assertSame('Incorrect API key provided: <redacted>', $logger->records[0]['context']['close_reason']);
     }
 }

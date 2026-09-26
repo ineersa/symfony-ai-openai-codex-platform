@@ -9,6 +9,7 @@ use Amp\TimeoutCancellation;
 use Amp\Websocket\Client\WebsocketConnection;
 use Psr\Log\LoggerInterface;
 use Psr\Log\NullLogger;
+use Symfony\AI\Platform\Bridge\OpenAICodex\Error\ProviderDiagnosticSanitizer;
 use Symfony\AI\Platform\Bridge\OpenAICodex\Error\ProviderErrorFormatter;
 use Symfony\AI\Platform\Bridge\OpenAICodex\Result\CancellableRawResultInterface;
 
@@ -119,7 +120,7 @@ final class RawWebSocketResult implements CancellableRawResultInterface
             }
 
             if (null === $message) {
-                throw new \RuntimeException('Codex WebSocket connection closed before response.completed.');
+                throw $this->connectionClosedException();
             }
 
             if (!$message->isText()) {
@@ -227,6 +228,46 @@ final class RawWebSocketResult implements CancellableRawResultInterface
             'cache_reused' => null !== $lease && $lease->reused,
             'cache_one_shot' => null !== $lease && $lease->oneShot,
         ]);
+    }
+
+    /** Surface the provider's close code and a credential-safe reason on premature EOF. */
+    private function connectionClosedException(): \RuntimeException
+    {
+        $closeCode = null;
+        $closeReason = null;
+
+        try {
+            $info = $this->connection->getCloseInfo();
+            $closeCode = $info->getCode();
+            $closeReason = ProviderDiagnosticSanitizer::sanitize($info->getReason());
+        } catch (\Throwable $e) {
+            // receive() can return null before close metadata becomes available.
+            $this->logger->debug('codex.websocket.close_info_unavailable', [
+                'event_type' => 'codex.websocket.close_info_unavailable',
+                'component' => 'raw_websocket_result',
+                'exception_class' => $e::class,
+            ]);
+        }
+
+        $this->logger->warning('codex.websocket.stream_closed', [
+            'event_type' => 'codex.websocket.stream_closed',
+            'component' => 'raw_websocket_result',
+            'close_code' => $closeCode,
+            'close_reason' => $closeReason,
+        ]);
+
+        $detail = null === $closeCode
+            ? 'close info unavailable'
+            : \sprintf(
+                'close code %d, reason: %s',
+                $closeCode,
+                '' === trim($closeReason) ? '(empty)' : mb_substr(trim($closeReason), 0, 200),
+            );
+
+        return new \RuntimeException(\sprintf(
+            'Codex WebSocket connection closed before response.completed (%s).',
+            $detail,
+        ));
     }
 
     /**
