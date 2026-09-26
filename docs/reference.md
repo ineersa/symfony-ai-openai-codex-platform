@@ -1,4 +1,4 @@
-# API and ownership reference
+# API reference
 
 All package classes use the `Symfony\AI\Platform\Bridge\OpenAICodex` namespace.
 
@@ -24,26 +24,30 @@ All package classes use the `Symfony\AI\Platform\Bridge\OpenAICodex` namespace.
 | `websocketCacheSettings` | Idle TTL 60 seconds, maximum age 3300 seconds |
 | `internalOptions` | Empty list. Additional host-only request keys to consume |
 
-`CodexRequestBodyFactory` always consumes `codex_reasoning_update` and `codex_reasoning_reset`. Configured internal keys are removed after payload and option merging, so a payload cannot reintroduce them. Unlisted keys retain their existing request semantics.
+`CodexRequestBodyFactory` removes `codex_reasoning_update`, `codex_reasoning_reset`, `codex_continuation_reset`, and `codex_continuation_generation` before sending a request. It also removes keys listed in `internalOptions`, after merging the payload and options.
 
 ## Transport lifecycle
 
-SSE and WebSocket requests share body normalization, UUIDv7 correlation, result conversion, and bounded 401 refresh. WebSocket results are streaming-only. A valid explicit UUIDv7 correlation key permits cache reuse. Generated keys are transient.
+GPT-5.6 and newer Codex models require WebSocket. `Websocket` opens a connection for each request. `WebsocketCached` can reuse a connection across turns. Both return streaming results. SSE remains available for models that support it.
 
-The host owns `CodexWebSocketConnectionCache` and closes it at worker shutdown through `closeAll()`. The cache is instance-scoped, not static. It validates provider, model, endpoint, account, age, and continuation compatibility. A busy session uses an isolated one-shot connection.
+Cached transport requires a caller-supplied UUIDv7 session key. A generated request key does not enable reuse. The bridge attempts at most one token refresh and retry after an authorization failure.
+
+Each `CodexWebSocketConnectionCache` holds its own connections. It checks the provider, model, endpoint, account, connection age, and request history before reuse. If a session's connection is busy, another request uses a separate connection. `closeAll()` closes the cache's connections at worker shutdown.
 
 `Result\CancellableRawResultInterface::abort(): void` is the host cancellation contract. `RawWebSocketResult` implements it. Abandoning or failing a stream invalidates its cached entry. A completed stream can retain its connection for compatible continuation.
 
 Structured transport logs omit raw prompts, tool content, and bearer tokens. `Error\ProviderErrorFormatter` bounds provider diagnostics. Provider error messages can still contain provider-supplied text.
 
-## OAuth ownership
+## Login and credential storage
 
 `Auth\CodexOAuthConfig` configures `originator`, `displayName`, and `commandName`. OpenAI client ID, endpoints, scopes, and redirect defaults remain Codex-specific. Credentials use the `openai-codex` key.
 
 `Auth\CodexAuthCommand` extends Symfony Console `Command`. It accepts `--refresh`, `--port`, `--timeout`, and `--no-browser`. It uses the input supplied by Console, including programmatic command execution.
 
-`Auth\CodexAuthRecord` preserves the wire fields `type`, `access`, `refresh`, `expires`, and `accountId`. `expires` is a Unix timestamp in seconds. `isExpired()` applies a 60-second buffer by default.
+`Auth\CodexAuthRecord::toArray()` returns `type`, `access`, `refresh`, `expires`, and `accountId`. `expires` is a Unix timestamp in seconds. `isExpired()` applies a 60-second buffer by default.
 
 `Auth\CodexAuthFileStore` persists credentials at a caller-supplied path without replacing entries for other providers. With a token refresher, `loadCredentials()` refreshes expired credentials under the shared file lock. `loadCredentialsRaw()` never refreshes. Applications may implement `Auth\CodexAuthStorageInterface` for another storage backend.
 
 OAuth, Console, and browser-launch dependencies install with this package.
+
+`Auth\CodexAuthRefreshStorageInterface::refreshWithLock()` serializes an explicit refresh with other writes. The OAuth service delegates to this method when the storage implementation provides it. A basic `CodexAuthStorageInterface` implementation does not provide refresh locking by itself.

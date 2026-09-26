@@ -1,8 +1,8 @@
 # Reuse WebSocket connections between turns
 
-Start with the [login and first-request example](../README.md). Cached WebSocket transport can reuse a connection while you keep the cache alive. Give turns in one conversation the same UUIDv7 `prompt_cache_key`.
+Start with the [login and first-request example](../README.md). To reuse a WebSocket connection, keep one cache alive across requests and use the same UUIDv7 `prompt_cache_key` for each conversation.
 
-Use a single cache in your worker and close it at shutdown:
+This example shows one request and its cleanup. In a worker, put the conversation loop inside the outer `try` block and close the cache only at shutdown:
 
 ```php
 use Symfony\AI\Platform\Bridge\OpenAICodex\Auth\CodexAuthFileStore;
@@ -24,6 +24,8 @@ $cache = new CodexWebSocketConnectionCache();
 $provider = Factory::createProvider(
 	accessToken: $credentials->access,
 	accountId: $credentials->accountId,
+	originator: 'my-cli', // Use your application's name.
+	userAgent: 'my-cli/1.0',
 	transport: CodexTransportEnum::WebsocketCached,
 	websocketConnectionCache: $cache,
 );
@@ -49,6 +51,10 @@ try {
 }
 ```
 
-Keep `$cache` alive for later turns in the same session; do not close it after each successful response. Aborting a completed result has no effect; abort any result whose stream you stop consuming early. To refresh expired tokens or retry after HTTP 401, use the service and refresher from the README before creating the provider, and pass an `accessTokenRefresher` callback to `Factory::createProvider()`.
+For later turns, pass the conversation history, including prior assistant responses and tool results. Reusing a connection does not replace request history.
+
+Call `abort()` if you stop consuming a stream early. After a completed stream, it has no effect. For automatic token refresh, use the file store and refresher setup from the README and pass its `accessTokenRefresher` callback to the factory.
+
+Connection reuse does not guarantee a prompt-cache hit. The provider can report zero cached tokens even on a successful continuation.
 
 To remove application-only invocation options before the request is sent, pass their names through `Factory::createProvider(internalOptions: ['application_run_id'])`. The bridge does not guess host-specific option names.
