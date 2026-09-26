@@ -22,7 +22,7 @@ use Symfony\Component\Console\Tester\CommandTester;
 
 final class CodexAuthCommandTest extends TestCase
 {
-    public function testLoginPersistsProfileAndUsesConfiguredIdentityAndPkce(): void
+    public function testLoginPersistsCredentialsAndUsesConfiguredIdentityAndPkce(): void
     {
         $requests = [];
         $handler = HandlerStack::create(new MockHandler([$this->tokenResponse('account')]));
@@ -36,13 +36,12 @@ final class CodexAuthCommandTest extends TestCase
         $application->addCommand($command);
         $tester = new CommandTester($application->find('login:codex'));
 
-        $tester->execute(['--no-browser' => true, '--auth-profile' => 'Work', '--port' => '1555', '--timeout' => '7']);
+        $tester->execute(['--no-browser' => true, '--port' => '1555', '--timeout' => '7']);
 
         $tester->assertCommandIsSuccessful();
         $this->assertSame(1555, $callback->port);
         $this->assertSame(7.0, $callback->timeout);
-        $this->assertSame(['openai-codex-work'], array_keys($storage->records));
-        $this->assertSame('account', $storage->records['openai-codex-work']->accountId);
+        $this->assertSame('account', $storage->record?->accountId);
         $this->assertStringContainsString('My Codex authentication successful', $tester->getDisplay());
         $this->assertStringNotContainsString('refresh-secret', $tester->getDisplay());
         $this->assertCount(1, $requests);
@@ -60,20 +59,19 @@ final class CodexAuthCommandTest extends TestCase
         $this->assertStringContainsString('state='.$callback->state, $tester->getDisplay());
     }
 
-    public function testRefreshReplacesOnlySelectedProfile(): void
+    public function testRefreshReplacesStoredCredentials(): void
     {
         $storage = new InMemoryAuthStorage();
         $old = new CodexAuthRecord('old', 'old-refresh', 1, 'account');
-        $storage->records = ['openai-codex' => $old, 'openai-codex-work' => $old];
+        $storage->record = $old;
         $client = new Client(['handler' => HandlerStack::create(new MockHandler([$this->tokenResponse('account')]))]);
         $service = new CodexOAuthService($storage, new CodexTokenRefresher(httpClient: $client));
         $tester = new CommandTester(new CodexAuthCommand($service));
 
-        $tester->execute(['--refresh' => true, '--auth-profile' => 'work']);
+        $tester->execute(['--refresh' => true]);
 
-        $tester->assertCommandIsSuccessful();
-        $this->assertSame($old, $storage->records['openai-codex']);
-        $this->assertSame('refresh-secret', $storage->records['openai-codex-work']->refresh);
+        $this->assertSame(0, $tester->getStatusCode(), $tester->getDisplay());
+        $this->assertSame('refresh-secret', $storage->record->refresh);
         $this->assertStringNotContainsString('refresh-secret', $tester->getDisplay());
     }
 
@@ -81,15 +79,15 @@ final class CodexAuthCommandTest extends TestCase
     {
         $storage = new InMemoryAuthStorage();
         $old = new CodexAuthRecord('old', 'old-refresh', 1, 'account');
-        $storage->records['openai-codex-work'] = $old;
+        $storage->record = $old;
         $client = new Client(['handler' => HandlerStack::create(new MockHandler([$this->tokenResponse('other-account')]))]);
         $config = new CodexOAuthConfig(commandName: 'login:codex');
         $service = new CodexOAuthService($storage, new CodexTokenRefresher(httpClient: $client), $config);
         $tester = new CommandTester(new CodexAuthCommand($service, $config));
 
-        $this->assertSame(1, $tester->execute(['--refresh' => true, '--auth-profile' => 'work']));
-        $this->assertSame($old, $storage->records['openai-codex-work']);
-        $this->assertStringContainsString('login:codex --auth-profile=work', $tester->getDisplay());
+        $this->assertSame(1, $tester->execute(['--refresh' => true]));
+        $this->assertSame($old, $storage->record);
+        $this->assertStringContainsString('login:codex', $tester->getDisplay());
         $this->assertStringNotContainsString('other-account', $tester->getDisplay());
     }
 
@@ -104,18 +102,7 @@ final class CodexAuthCommandTest extends TestCase
         $this->assertSame(1, $tester->execute(['--no-browser' => true], ['interactive' => true]));
         $this->assertStringContainsString('State mismatch', $tester->getDisplay());
         $this->assertNull($handler->getLastRequest());
-        $this->assertSame([], $storage->records);
-    }
-
-    public function testInvalidProfileIsRejectedBeforeLogin(): void
-    {
-        $storage = new InMemoryAuthStorage();
-        $callback = new CallbackServer();
-        $tester = new CommandTester(new CodexAuthCommand(new CodexOAuthService($storage, callbackServer: $callback)));
-
-        $this->assertSame(1, $tester->execute(['--auth-profile' => '../other', '--no-browser' => true]));
-        $this->assertNull($callback->state);
-        $this->assertSame([], $storage->records);
+        $this->assertNull($storage->record);
     }
 
     private function tokenResponse(string $account): Response

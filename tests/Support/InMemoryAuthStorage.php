@@ -9,16 +9,15 @@ use Symfony\AI\Platform\Bridge\OpenAICodex\Auth\CodexAuthStorageInterface;
 
 final class InMemoryAuthStorage implements CodexAuthStorageInterface
 {
-    /** @var array<string, CodexAuthRecord> */
-    public array $records = [];
+    public ?CodexAuthRecord $record = null;
 
-    public function loadCredentialsRaw(string $providerKey): ?CodexAuthRecord
+    public function loadCredentialsRaw(): ?CodexAuthRecord
     {
-        return $this->records[$providerKey] ?? null;
+        return $this->record;
     }
 
-    public function saveCredentials(string $providerKey, CodexAuthRecord $record): void
+    public function saveCredentials(CodexAuthRecord $record): void
     {
-        $this->records[$providerKey] = $record;
+        $this->record = $record;
     }
 }

@@ -7,7 +7,7 @@ namespace Symfony\AI\Platform\Bridge\OpenAICodex\Auth;
 /** Host-owned credential persistence. Loading must not trigger automatic refresh. */
 interface CodexAuthStorageInterface
 {
-    public function loadCredentialsRaw(string $providerKey): ?CodexAuthRecord;
+    public function loadCredentialsRaw(): ?CodexAuthRecord;
 
-    public function saveCredentials(string $providerKey, CodexAuthRecord $record): void;
+    public function saveCredentials(CodexAuthRecord $record): void;
 }

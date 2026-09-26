@@ -41,7 +41,7 @@ class CodexTokenRefresher
         if (null !== $this->httpClient) {
             $provider->setHttpClient($this->httpClient);
         }
-        $hint = CodexOAuthConfig::authCommandHintForProviderKey(CodexOAuthConfig::PROVIDER_KEY, $this->config->commandName);
+        $hint = 'bin/console '.$this->config->commandName;
 
         try {
             $token = $provider->getAccessToken('refresh_token', [

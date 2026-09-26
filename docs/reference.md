@@ -21,7 +21,7 @@ All package classes use the `Symfony\AI\Platform\Bridge\OpenAICodex` namespace.
 | `transport` | `Websocket`, `WebsocketCached`, or `Sse` |
 | `websocketConnector` | `AmpCodexWebSocketConnector` |
 | `websocketConnectionCache` | Caller-owned cache for cached transport |
-| `websocketCacheSettings` | Idle TTL 300 seconds, maximum age 3300 seconds |
+| `websocketCacheSettings` | Idle TTL 60 seconds, maximum age 3300 seconds |
 | `internalOptions` | Empty list. Additional host-only request keys to consume |
 
 `CodexRequestBodyFactory` always consumes `codex_reasoning_update` and `codex_reasoning_reset`. Configured internal keys are removed after payload and option merging, so a payload cannot reintroduce them. Unlisted keys retain their existing request semantics.
@@ -38,12 +38,12 @@ Structured transport logs omit raw prompts, tool content, and bearer tokens. `Er
 
 ## OAuth ownership
 
-`Auth\CodexOAuthConfig` configures `originator`, `displayName`, and `commandName`. OpenAI client ID, endpoints, scopes, and redirect defaults remain Codex-specific. Static profile helpers preserve the `openai-codex` and `openai-codex-<profile>` keys.
+`Auth\CodexOAuthConfig` configures `originator`, `displayName`, and `commandName`. OpenAI client ID, endpoints, scopes, and redirect defaults remain Codex-specific. Credentials use the `openai-codex` key.
 
-`Auth\CodexAuthCommand` extends Symfony Console `Command`. It accepts `--auth-profile`, `--refresh`, `--port`, `--timeout`, and `--no-browser`. It uses the input supplied by Console, including programmatic command execution.
+`Auth\CodexAuthCommand` extends Symfony Console `Command`. It accepts `--refresh`, `--port`, `--timeout`, and `--no-browser`. It uses the input supplied by Console, including programmatic command execution.
 
 `Auth\CodexAuthRecord` preserves the wire fields `type`, `access`, `refresh`, `expires`, and `accountId`. `expires` is a Unix timestamp in seconds. `isExpired()` applies a 60-second buffer by default.
 
-The host supplies `Auth\CodexAuthStorageInterface`. Host responsibilities include file paths, secret protection, refresh locking, profile selection for model requests, and automatic-refresh policy. The package provides the login flow, callback handling, browser helper, manual-code parser, and account-consistent refresh.
+`Auth\CodexAuthFileStore` persists credentials at a caller-supplied path without replacing entries for other providers. Applications may implement `Auth\CodexAuthStorageInterface` for another storage backend. The host chooses whether to refresh expired credentials automatically on read. The package provides the login flow, callback handling, browser helper, manual-code parser, and account-consistent refresh.
 
 OAuth dependencies are optional Composer suggestions. Transport operation does not load `Auth` classes or require Console, browser launching, or a credential store.

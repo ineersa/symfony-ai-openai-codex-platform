@@ -26,27 +26,23 @@ final class CodexAuthCommand extends Command
             ->addOption('no-browser', null, InputOption::VALUE_NONE, 'Print the authorization URL without opening a browser')
             ->addOption('timeout', null, InputOption::VALUE_REQUIRED, 'Callback timeout in seconds', CodexOAuthConfig::DEFAULT_TIMEOUT)
             ->addOption('port', null, InputOption::VALUE_REQUIRED, 'Local callback TCP port', CodexOAuthConfig::DEFAULT_PORT)
-            ->addOption('refresh', null, InputOption::VALUE_NONE, 'Refresh stored credentials instead of logging in')
-            ->addOption('auth-profile', null, InputOption::VALUE_REQUIRED, 'Account profile name, for example work or personal');
+            ->addOption('refresh', null, InputOption::VALUE_NONE, 'Refresh stored credentials instead of logging in');
     }
 
     protected function execute(InputInterface $input, OutputInterface $output): int
     {
         $io = new SymfonyStyle($input, $output);
-        $profile = $input->getOption('auth-profile');
         try {
-            $providerKey = CodexOAuthConfig::providerKeyForProfile($profile);
             $port = $this->integerOption($input, 'port');
             $timeout = $this->integerOption($input, 'timeout');
             $refresh = $input->getOption('refresh');
             $record = $refresh
-                ? $this->oauthService->refreshCredentials($providerKey)
+                ? $this->oauthService->refreshCredentials()
                 : $this->oauthService->login(
                     $io,
                     noBrowser: $input->getOption('no-browser'),
                     timeout: $timeout,
                     port: $port,
-                    providerKey: $providerKey,
                 );
         } catch (\InvalidArgumentException|\RuntimeException $exception) {
             $io->error($exception->getMessage());
@@ -54,12 +50,10 @@ final class CodexAuthCommand extends Command
             return self::FAILURE;
         }
 
-        $profileLabel = null !== $profile && '' !== trim($profile) ? ' (profile: '.$profile.')' : '';
         $io->success(\sprintf(
-            '%s%s%s. Token expires at %s.',
+            '%s%s. Token expires at %s.',
             $this->config->displayName,
             $refresh ? ' credentials refreshed' : ' authentication successful',
-            $profileLabel,
             date('Y-m-d H:i:s T', $record->expires),
         ));
 

@@ -46,7 +46,6 @@ final class CodexOAuthService
         bool $noBrowser = false,
         int $timeout = CodexOAuthConfig::DEFAULT_TIMEOUT,
         int $port = CodexOAuthConfig::DEFAULT_PORT,
-        string $providerKey = CodexOAuthConfig::PROVIDER_KEY,
     ): CodexAuthRecord {
         $provider = $this->createProvider($port);
         $authUrl = $provider->getAuthorizationUrl([
@@ -140,13 +139,13 @@ final class CodexOAuthService
             accountId: $accountId,
         );
 
-        $this->storage->saveCredentials($providerKey, $record);
+        $this->storage->saveCredentials($record);
 
         return $record;
     }
 
     /**
-     * Refresh stored credentials for the given provider key.
+     * Refresh stored credentials.
      *
      * Loads the stored refresh token, exchanges it for new tokens
      * via {@see CodexTokenRefresher}, validates the account ID,
@@ -154,28 +153,29 @@ final class CodexOAuthService
      *
      * @throws \RuntimeException when no stored credentials, refresh fails, or account ID changes
      */
-    public function refreshCredentials(string $providerKey = CodexOAuthConfig::PROVIDER_KEY): CodexAuthRecord
+    public function refreshCredentials(): CodexAuthRecord
     {
         if (null === $this->tokenRefresher) {
             throw new \RuntimeException('Token refresh is not available (no refresher configured).');
         }
 
-        $stored = $this->storage->loadCredentialsRaw($providerKey);
+        $stored = $this->storage->loadCredentialsRaw();
 
         if (null === $stored) {
-            $hint = CodexOAuthConfig::authCommandHintForProviderKey($providerKey, $this->config->commandName);
-            throw new \RuntimeException(\sprintf('No stored Codex credentials found. Run %s first.', $hint));
+            throw new \RuntimeException(\sprintf('No stored Codex credentials found. Run bin/console %s first.', $this->config->commandName));
         }
 
         try {
+            if ($this->storage instanceof CodexAuthRefreshStorageInterface) {
+                return $this->storage->refreshWithLock($this->tokenRefresher);
+            }
+
             $fresh = $this->tokenRefresher->refresh($stored->refresh, $stored->accountId);
         } catch (\Throwable $e) {
-            $hint = CodexOAuthConfig::authCommandHintForProviderKey($providerKey, $this->config->commandName);
-
-            throw new \RuntimeException("Token refresh failed for stored Codex credentials. Run {$hint} to re-authenticate.", previous: $e);
+            throw new \RuntimeException(\sprintf('Token refresh failed for stored Codex credentials. Run bin/console %s to re-authenticate.', $this->config->commandName), previous: $e);
         }
 
-        $this->storage->saveCredentials($providerKey, $fresh);
+        $this->storage->saveCredentials($fresh);
 
         return $fresh;
     }

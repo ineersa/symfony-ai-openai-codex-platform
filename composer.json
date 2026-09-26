@@ -16,6 +16,7 @@
         "symfony/http-client": "^8.0",
         "symfony/http-client-contracts": "^3.0",
         "symfony/event-dispatcher-contracts": "^3.0",
+        "symfony/lock": "^8.0",
         "symfony/serializer": "^8.0",
         "symfony/uid": "^8.0"
     },
