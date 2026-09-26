@@ -7,6 +7,7 @@ namespace Symfony\AI\Platform\Bridge\OpenAICodex\Tests\Auth;
 use PHPUnit\Framework\TestCase;
 use Symfony\AI\Platform\Bridge\OpenAICodex\Auth\CodexAuthFileStore;
 use Symfony\AI\Platform\Bridge\OpenAICodex\Auth\CodexAuthRecord;
+use Symfony\AI\Platform\Bridge\OpenAICodex\Auth\CodexOAuthService;
 use Symfony\AI\Platform\Bridge\OpenAICodex\Auth\CodexTokenRefresher;
 
 final class CodexAuthFileStoreTest extends TestCase
@@ -63,6 +64,23 @@ final class CodexAuthFileStoreTest extends TestCase
         }
     }
 
+    public function testEmptyExistingFileCanBeInitialized(): void
+    {
+        $directory = sys_get_temp_dir().'/codex-auth-'.bin2hex(random_bytes(8));
+        mkdir($directory, 0700);
+        $path = $directory.'/auth.json';
+        file_put_contents($path, '');
+        try {
+            $store = new CodexAuthFileStore($path);
+            $this->assertNull($store->loadCredentials());
+            $store->saveCredentials(new CodexAuthRecord('access', 'refresh', time() + 3600, 'account'));
+            $this->assertSame('access', $store->loadCredentialsRaw()?->access);
+        } finally {
+            @unlink($path);
+            @rmdir($directory);
+        }
+    }
+
     public function testRefreshReadsLatestRecordUnderFileLock(): void
     {
         $directory = sys_get_temp_dir().'/codex-auth-'.bin2hex(random_bytes(8));
@@ -86,6 +104,29 @@ final class CodexAuthFileStoreTest extends TestCase
             $store->refreshWithLock($refresher);
             $this->assertSame(['refresh-1', 'refresh-2'], $refresher->seen);
             $this->assertSame('refresh-3', $store->loadCredentialsRaw()?->refresh);
+        } finally {
+            @unlink($path);
+            @rmdir($directory);
+        }
+    }
+
+    public function testOAuthServiceForcesRefreshOnValidRecordThroughFileStore(): void
+    {
+        $directory = sys_get_temp_dir().'/codex-auth-'.bin2hex(random_bytes(8));
+        $path = $directory.'/auth.json';
+        try {
+            $store = new CodexAuthFileStore($path);
+            $store->saveCredentials(new CodexAuthRecord('old', 'refresh', time() + 3600, 'account'));
+            $refresher = new class extends CodexTokenRefresher {
+                public function refresh(string $refreshToken, string $expectedAccountId): CodexAuthRecord
+                {
+                    TestCase::assertSame('refresh', $refreshToken);
+
+                    return new CodexAuthRecord('new', 'rotated', time() + 3600, $expectedAccountId);
+                }
+            };
+            $this->assertSame('new', (new CodexOAuthService($store, $refresher))->refreshCredentials()->access);
+            $this->assertSame('rotated', $store->loadCredentialsRaw()?->refresh);
         } finally {
             @unlink($path);
             @rmdir($directory);

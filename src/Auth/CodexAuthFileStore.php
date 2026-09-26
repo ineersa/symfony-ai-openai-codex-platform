@@ -118,6 +118,9 @@ final class CodexAuthFileStore implements CodexAuthRefreshStorageInterface
         if (false === $json) {
             throw new \RuntimeException(\sprintf('Cannot read Codex credentials at %s.', $this->path));
         }
+        if ('' === trim($json)) {
+            return [];
+        }
 
         try {
             $data = json_decode($json, true, 8, \JSON_THROW_ON_ERROR);
