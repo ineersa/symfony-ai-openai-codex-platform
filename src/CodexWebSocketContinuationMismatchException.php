@@ -13,7 +13,13 @@ namespace Symfony\AI\Platform\Bridge\OpenAICodex;
  */
 final class CodexWebSocketContinuationMismatchException extends \LogicException
 {
-    public function __construct(string $reason)
+    /**
+     * Host-owned diagnostics for the rejected pair only, never full history.
+     * May contain sensitive item values; hosts must redact before logging.
+     *
+     * @param array<string, mixed> $diagnostics
+     */
+    public function __construct(string $reason, public readonly array $diagnostics = [])
     {
         parent::__construct(\sprintf(
             'Cached Codex WebSocket continuation rejected (%s); full-history fallback is disabled.',

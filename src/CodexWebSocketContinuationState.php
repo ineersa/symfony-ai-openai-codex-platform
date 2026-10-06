@@ -149,6 +149,34 @@ final class CodexWebSocketContinuationState
     }
 
     /**
+     * The host owns capture policy. Return only the rejected pair, without
+     * serialization or logging that could interfere with transport teardown.
+     *
+     * @param array<string, mixed> $currentRequestBody
+     *
+     * @return array<string, mixed>
+     */
+    public function mismatchContext(array $currentRequestBody, CodexWebSocketContinuationDecision $decision): array
+    {
+        $index = $decision->firstMismatchIndex;
+        if (CodexWebSocketContinuationDecision::REASON_PREFIX_MISMATCH !== $decision->reason || null === $index) {
+            return [];
+        }
+
+        $lastInput = $this->lastRequestBody['input'] ?? [];
+        $lastInput = \is_array($lastInput) ? $lastInput : [];
+        $offset = $index - \count($lastInput);
+        $currentInput = $currentRequestBody['input'] ?? [];
+
+        return [
+            ...$decision->toLogContext(),
+            'current_item' => \is_array($currentInput) ? ($currentInput[$index] ?? null) : null,
+            'expected_item' => $offset >= 0 ? ($this->lastResponseItems[$offset] ?? null) : ($lastInput[$index] ?? null),
+            'expected_source' => $offset >= 0 ? 'previous_response' : 'previous_request',
+        ];
+    }
+
+    /**
      * @param array<string, mixed>       $fullRequestBody
      * @param list<array<string, mixed>> $responseItems
      */

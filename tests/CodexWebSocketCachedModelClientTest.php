@@ -928,6 +928,12 @@ final class CodexWebSocketCachedModelClientTest extends TestCase
         $this->assertCount(1, $mismatchLogs);
         $this->assertSame('prefix_mismatch', $mismatchLogs[0]['context']['reason']);
         $this->assertFalse($mismatchLogs[0]['context']['prefix_normalized_equal']);
+        $this->assertSame('{"path":"./different.txt"}', $exception->diagnostics['current_item']['arguments']);
+        $this->assertSame('{"path":"./probe.txt"}', $exception->diagnostics['expected_item']['arguments']);
+        $this->assertSame('previous_response', $exception->diagnostics['expected_source']);
+        $this->assertStringNotContainsString('read fixture', json_encode($exception->diagnostics, \JSON_THROW_ON_ERROR));
+        $this->assertStringNotContainsString('./different.txt', json_encode($mismatchLogs, \JSON_THROW_ON_ERROR));
+        $this->assertStringNotContainsString('./probe.txt', json_encode($mismatchLogs, \JSON_THROW_ON_ERROR));
     }
 
     public function testContinuationResetStartsFreshBaselineThenAllowsDelta(): void

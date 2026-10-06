@@ -38,6 +38,8 @@ Each `CodexWebSocketConnectionCache` holds its own connections. It checks the pr
 
 Structured transport logs omit raw prompts, tool content, and bearer tokens. `Error\ProviderErrorFormatter` bounds provider diagnostics. Provider error messages can still contain provider-supplied text.
 
+`CodexWebSocketContinuationMismatchException::diagnostics` carries the two rejected items for a `prefix_mismatch`, with the existing structural diagnostics and `expected_source` set to `previous_request` or `previous_response`. It does not contain either full history. The host owns logging, redaction, and size limits. The exception message and SDK transport logs remain content-free. Item values can contain conversation text, tool arguments, credentials, or reasoning ciphertext; do not log them without redaction.
+
 ## Login and credential storage
 
 `Auth\CodexOAuthConfig` configures `originator`, `displayName`, and `commandName`. OpenAI client ID, endpoints, scopes, and redirect defaults remain Codex-specific. Credentials use the `openai-codex` key.

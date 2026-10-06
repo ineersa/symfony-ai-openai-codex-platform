@@ -223,9 +223,9 @@ final class CodexWebSocketContinuationComparator
             $limit = min(\count($left), \count($right));
             for ($i = 0; $i < $limit; ++$i) {
                 if (self::encode($left[$i]) !== self::encode($right[$i])) {
-                    // Keep list indexes out of logged paths; continue under the
-                    // current allowlisted ancestor with a depth budget.
-                    return self::describeComparableValueMismatch($left[$i], $right[$i], $path, $depth + 1);
+                    // Numeric indexes locate the exact content part without
+                    // exposing dynamic provider keys or values.
+                    return self::describeComparableValueMismatch($left[$i], $right[$i], $path.'['.$i.']', $depth + 1);
                 }
             }
 

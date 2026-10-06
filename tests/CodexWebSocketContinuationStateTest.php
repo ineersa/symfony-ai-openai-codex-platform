@@ -17,6 +17,21 @@ use Symfony\Component\Uid\UuidV7;
 
 final class CodexWebSocketContinuationStateTest extends TestCase
 {
+    public function testRejectedHistoricalItemIsCarriedWithoutOtherHistory(): void
+    {
+        $previous = ['input' => [['role' => 'user', 'content' => 'before'], ['role' => 'user', 'content' => 'unrelated history']]];
+        $state = new CodexWebSocketContinuationState($previous, 'resp_context', []);
+        $current = $previous;
+        $current['input'][0]['content'] = 'after';
+
+        $context = $state->mismatchContext($current, $state->decide($current));
+        $this->assertSame($current['input'][0], $context['current_item']);
+        $this->assertSame($previous['input'][0], $context['expected_item']);
+        $this->assertSame('previous_request', $context['expected_source']);
+        $this->assertStringNotContainsString('unrelated history', json_encode($context, \JSON_THROW_ON_ERROR));
+        $this->assertSame([], $state->mismatchContext($previous, $state->decide($previous)));
+    }
+
     public function testToolChangeDoesNotHideAnUnrelatedHistoryOrBodyMismatch(): void
     {
         $body = [
@@ -401,7 +416,7 @@ final class CodexWebSocketContinuationStateTest extends TestCase
         $this->assertStringNotContainsString('secret-right', $encoded);
     }
 
-    public function testDeeplyNestedMismatchPathsStayBoundedWithoutIndexesOrSecrets(): void
+    public function testDeeplyNestedMismatchPathsStayBoundedWithoutDynamicKeysOrSecrets(): void
     {
         $deepLeft = [
             'type' => 'reasoning',
@@ -439,7 +454,7 @@ final class CodexWebSocketContinuationStateTest extends TestCase
         ]);
 
         $this->assertSame(CodexWebSocketContinuationDecision::REASON_PREFIX_MISMATCH, $decision->reason);
-        $this->assertNotNull($decision->mismatchFieldPath);
+        $this->assertSame('summary[0].text[0]', $decision->mismatchFieldPath);
         $this->assertLessThanOrEqual(64, \strlen((string) $decision->mismatchFieldPath));
         $this->assertDoesNotMatchRegularExpression('/\\.\\d+(\\.|$)/', (string) $decision->mismatchFieldPath);
         $this->assertSame('different', $decision->mismatchRelation);

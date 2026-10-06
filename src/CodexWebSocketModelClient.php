@@ -307,6 +307,7 @@ final class CodexWebSocketModelClient implements ModelClientInterface
 
         $decision = $lease->entry->continuation->decide($fullBody);
         if (null === $decision->delta) {
+            $diagnostics = $lease->entry->continuation->mismatchContext($fullBody, $decision);
             $this->logger->error('codex.websocket.continuation.mismatch', [
                 'event_type' => 'codex.websocket.continuation.mismatch',
                 'component' => 'codex_websocket_model_client',
@@ -314,7 +315,7 @@ final class CodexWebSocketModelClient implements ModelClientInterface
             ]);
             $this->failOutboundTransport($lease->connection, $lease, 'continuation_mismatch');
 
-            throw new CodexWebSocketContinuationMismatchException($decision->reason);
+            throw new CodexWebSocketContinuationMismatchException($decision->reason, $diagnostics);
         }
 
         $delta = $decision->delta;
