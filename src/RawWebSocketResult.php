@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace Symfony\AI\Platform\Bridge\OpenAICodex;
 
+use Amp\Cancellation;
 use Amp\CancelledException;
+use Amp\CompositeCancellation;
 use Amp\TimeoutCancellation;
 use Amp\Websocket\Client\WebsocketConnection;
 use Psr\Log\LoggerInterface;
@@ -46,6 +48,7 @@ final class RawWebSocketResult implements CancellableRawResultInterface
         ?LoggerInterface $logger = null,
         private bool $aborted = false,
         private readonly ?CodexWebSocketCachedStreamContext $cachedStreamContext = null,
+        private readonly ?Cancellation $cancellation = null,
     ) {
         $this->handle = new CodexWebSocketResultHandle();
         $this->logger = $logger ?? new NullLogger();
@@ -107,14 +110,16 @@ final class RawWebSocketResult implements CancellableRawResultInterface
     private function iterateEvents(bool &$streamSucceeded): \Generator
     {
         while (!$this->aborted) {
+            $this->cancellation?->throwIfRequested();
             try {
                 // receive() is cancellable; idleTimeoutSeconds bounds waiting for the next
                 // complete WebSocket message start. Half-closed sockets may lag isClosed()
                 // until the background parser observes EOF — the timeout is the hard bound.
                 $message = $this->connection->receive(
-                    new TimeoutCancellation($this->idleTimeoutSeconds),
+                    $this->ioCancellation(),
                 );
             } catch (CancelledException $e) {
+                $this->cancellation?->throwIfRequested();
                 $this->logIoTimeout('receive');
                 throw new \RuntimeException('Codex WebSocket idle timeout.', previous: $e);
             }
@@ -131,12 +136,14 @@ final class RawWebSocketResult implements CancellableRawResultInterface
             // message whose continuation never arrives can block indefinitely after receive()
             // returned. Bound buffering with the same idle timeout as receive/send.
             try {
-                $payload = $message->buffer(new TimeoutCancellation($this->idleTimeoutSeconds));
+                $payload = $message->buffer($this->ioCancellation());
             } catch (CancelledException $e) {
+                $this->cancellation?->throwIfRequested();
                 $this->logIoTimeout('buffer');
                 throw new \RuntimeException('Codex WebSocket message buffer timeout.', previous: $e);
             }
 
+            $this->cancellation?->throwIfRequested();
             if ('' === $payload) {
                 continue;
             }
@@ -214,6 +221,13 @@ final class RawWebSocketResult implements CancellableRawResultInterface
         }
 
         return \sprintf('non-success terminal event (%s): %s', $type, $text);
+    }
+
+    private function ioCancellation(): Cancellation
+    {
+        $timeout = new TimeoutCancellation($this->idleTimeoutSeconds);
+
+        return null === $this->cancellation ? $timeout : new CompositeCancellation($this->cancellation, $timeout);
     }
 
     private function logIoTimeout(string $phase): void

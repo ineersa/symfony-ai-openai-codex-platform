@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace Symfony\AI\Platform\Bridge\OpenAICodex;
 
+use Amp\Cancellation;
 use Amp\CancelledException;
+use Amp\CompositeCancellation;
 use Amp\TimeoutCancellation;
 use Amp\Websocket\Client\Rfc6455Connector;
 use Amp\Websocket\Client\WebsocketConnection;
@@ -17,15 +19,19 @@ final class AmpCodexWebSocketConnector implements CodexWebSocketConnectorInterfa
     ) {
     }
 
-    public function connect(string $websocketUrl, array $headers, float $connectTimeoutSeconds): WebsocketConnection
+    public function connect(string $websocketUrl, array $headers, float $connectTimeoutSeconds, ?Cancellation $cancellation = null): WebsocketConnection
     {
         $handshake = new WebsocketHandshake($websocketUrl, $headers);
         $handshake = $handshake->withTcpConnectTimeout($connectTimeoutSeconds);
         $handshake = $handshake->withTlsHandshakeTimeout($connectTimeoutSeconds);
 
         try {
-            return $this->connector->connect($handshake, new TimeoutCancellation($connectTimeoutSeconds));
+            $timeout = new TimeoutCancellation($connectTimeoutSeconds);
+
+            return $this->connector->connect($handshake, null === $cancellation ? $timeout : new CompositeCancellation($cancellation, $timeout));
         } catch (CancelledException $e) {
+            $cancellation?->throwIfRequested();
+
             throw new \RuntimeException('Codex WebSocket connect timeout.', previous: $e);
         }
     }

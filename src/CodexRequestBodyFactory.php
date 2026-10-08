@@ -54,6 +54,7 @@ final class CodexRequestBodyFactory
             $jsonBody[self::REASONING_RESET],
             $jsonBody[self::CONTINUATION_RESET],
             $jsonBody[self::CONTINUATION_GENERATION],
+            $jsonBody[CodexWebSocketModelClient::CANCELLATION],
         );
         foreach ($this->internalOptions as $option) {
             unset($jsonBody[$option]);

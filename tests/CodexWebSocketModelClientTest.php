@@ -4,23 +4,84 @@ declare(strict_types=1);
 
 namespace Symfony\AI\Platform\Bridge\OpenAICodex\Tests;
 
+use Amp\Cancellation;
+use Amp\CancelledException;
+use Amp\DeferredCancellation;
 use Amp\Http\Client\Request;
 use Amp\Http\Client\Response;
+use Amp\TimeoutCancellation;
 use Amp\Websocket\Client\WebsocketConnectException;
 use Amp\Websocket\Client\WebsocketConnection;
 use PHPUnit\Framework\TestCase;
 use Symfony\AI\Platform\Bridge\OpenAICodex\CodexModel;
 use Symfony\AI\Platform\Bridge\OpenAICodex\CodexRequestBodyFactory;
+use Symfony\AI\Platform\Bridge\OpenAICodex\CodexTransportEnum;
+use Symfony\AI\Platform\Bridge\OpenAICodex\CodexWebSocketConnectionCache;
 use Symfony\AI\Platform\Bridge\OpenAICodex\CodexWebSocketConnectorInterface;
 use Symfony\AI\Platform\Bridge\OpenAICodex\CodexWebSocketHandshakeHeadersFactory;
 use Symfony\AI\Platform\Bridge\OpenAICodex\CodexWebSocketModelClient;
 use Symfony\AI\Platform\Bridge\OpenAICodex\CodexWebSocketUrlResolver;
 use Symfony\AI\Platform\Bridge\OpenAICodex\RawWebSocketResult;
+use Symfony\AI\Platform\Bridge\OpenAICodex\Tests\Support\PendingOperation;
 use Symfony\AI\Platform\Bridge\OpenAICodex\Tests\Support\TestLogger;
+
+use function Amp\async;
 
 final class CodexWebSocketModelClientTest extends TestCase
 {
     use AssertUuidV7Trait;
+
+    public function testCancellationClosesAndJoinsPendingSendWithoutRetryOrCacheReuse(): void
+    {
+        $pending = new PendingOperation();
+        $source = new DeferredCancellation();
+        $connection = $this->createMock(WebsocketConnection::class);
+        $connection->expects($this->once())->method('sendText')->willReturnCallback(static function (string $frame) use ($pending): void {
+            self::assertArrayNotHasKey(CodexWebSocketModelClient::CANCELLATION, json_decode($frame, true, flags: \JSON_THROW_ON_ERROR));
+            $pending->wait(); // sendText has no cancellation argument; close must release it.
+        });
+        $connection->expects($this->once())->method('close')->willReturnCallback($pending->close(...));
+        $fresh = $this->createMock(WebsocketConnection::class);
+        $fresh->expects($this->once())->method('sendText');
+        $fresh->expects($this->once())->method('close');
+        $connector = $this->createMock(CodexWebSocketConnectorInterface::class);
+        $connects = 0;
+        $connector->expects($this->exactly(2))->method('connect')->willReturnCallback(
+            static function (string $url, array $headers, float $timeout, ?Cancellation $cancellation) use ($connection, $fresh, $source, &$connects): WebsocketConnection {
+                self::assertSame(0 === $connects ? $source->getCancellation() : null, $cancellation);
+
+                return 0 === $connects++ ? $connection : $fresh;
+            },
+        );
+        $cache = new CodexWebSocketConnectionCache();
+        $logger = new TestLogger();
+        $client = new CodexWebSocketModelClient(
+            $connector, new CodexWebSocketUrlResolver(), new CodexWebSocketHandshakeHeadersFactory(),
+            new CodexRequestBodyFactory(), 'https://chatgpt.com/backend-api', 'access', 'acct-1',
+            logger: $logger, idleTimeoutSeconds: 120.0, transport: CodexTransportEnum::WebsocketCached, connectionCache: $cache,
+        );
+        $options = ['prompt_cache_key' => '0194dddd-bbbb-7ccc-8ddd-dddddddddddd'];
+        $future = async(static fn () => $client->request(new CodexModel('gpt-5.6-luna'), ['input' => []], $options + [CodexWebSocketModelClient::CANCELLATION => $source->getCancellation()]));
+        try {
+            $pending->ready->getFuture()->await(new TimeoutCancellation(2.0));
+            $source->cancel();
+            try {
+                $future->await(new TimeoutCancellation(2.0));
+                $this->fail('Expected run cancellation.');
+            } catch (CancelledException) {
+                $this->assertTrue($pending->finished, 'Request must join its writer before returning.');
+            }
+            $this->assertSame(1, $connects, 'Cancellation must not reconnect or duplicate delivery.');
+            $this->assertSame([], array_filter($logger->records, static fn (array $record): bool => 'codex.websocket.io_timeout' === $record['message']));
+            $next = $client->request(new CodexModel('gpt-5.6-luna'), ['input' => []], $options);
+            $this->assertInstanceOf(RawWebSocketResult::class, $next);
+            $next->abort();
+        } finally {
+            $pending->close();
+            \Amp\Future\awaitAll([$future]);
+            $cache->closeAll();
+        }
+    }
 
     public function testSendsResponseCreateFrameWithSharedBodyMapping(): void
     {
