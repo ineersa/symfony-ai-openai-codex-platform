@@ -7,12 +7,17 @@ namespace Symfony\AI\Platform\Bridge\OpenAICodex\Tests;
 use Amp\Cancellation;
 use Amp\CancelledException;
 use Amp\DeferredCancellation;
+use Amp\DeferredFuture;
 use Amp\Http\Client\Request;
 use Amp\Http\Client\Response;
+use Amp\Socket;
 use Amp\TimeoutCancellation;
+use Amp\Websocket\Client\Rfc6455Connection;
 use Amp\Websocket\Client\WebsocketConnectException;
 use Amp\Websocket\Client\WebsocketConnection;
+use Amp\Websocket\Rfc6455Client;
 use PHPUnit\Framework\TestCase;
+use Revolt\EventLoop;
 use Symfony\AI\Platform\Bridge\OpenAICodex\CodexModel;
 use Symfony\AI\Platform\Bridge\OpenAICodex\CodexRequestBodyFactory;
 use Symfony\AI\Platform\Bridge\OpenAICodex\CodexTransportEnum;
@@ -30,6 +35,50 @@ use function Amp\async;
 final class CodexWebSocketModelClientTest extends TestCase
 {
     use AssertUuidV7Trait;
+
+    public function testCancellationClosesARealBackpressuredWriter(): void
+    {
+        [$socket, $peer] = Socket\createSocketPair();
+        $connection = new Rfc6455Connection(
+            new Rfc6455Client($socket, true, closePeriod: 0.05),
+            new Response('1.1', 101, null, [], null, new Request('ws://localhost/responses')),
+        );
+        $ready = new DeferredFuture();
+        $peerFuture = async(static function () use ($peer, $ready): void {
+            self::assertNotNull($peer->read(new TimeoutCancellation(2.0)));
+            $ready->complete(); // Write has begun. Retain the peer without draining it.
+        });
+        $source = new DeferredCancellation();
+        $connector = $this->createMock(CodexWebSocketConnectorInterface::class);
+        $connector->expects($this->once())->method('connect')->willReturn($connection);
+        $client = new CodexWebSocketModelClient(
+            $connector, new CodexWebSocketUrlResolver(), new CodexWebSocketHandshakeHeadersFactory(),
+            new CodexRequestBodyFactory(), 'https://chatgpt.com/backend-api', 'access', 'acct-1',
+        );
+        $safety = EventLoop::delay(2.0, $peer->close(...));
+        $future = async(static fn () => $client->request(
+            new CodexModel('gpt-5.6-luna'), ['input' => [['role' => 'user', 'content' => str_repeat('x', 4 * 1024 * 1024)]]],
+            [CodexWebSocketModelClient::CANCELLATION => $source->getCancellation()],
+        ));
+        try {
+            $ready->getFuture()->await(new TimeoutCancellation(2.0));
+            $this->assertFalse($future->isComplete());
+            $source->cancel();
+            try {
+                $future->await(new TimeoutCancellation(2.0));
+                $this->fail('Expected run cancellation.');
+            } catch (CancelledException) {
+                $this->assertTrue($connection->isClosed());
+                $this->assertTrue($socket->isClosed());
+            }
+        } finally {
+            EventLoop::cancel($safety);
+            $source->cancel();
+            $peer->close();
+            $socket->close();
+            \Amp\Future\awaitAll([$future, $peerFuture]);
+        }
+    }
 
     public function testCancellationClosesAndJoinsPendingSendWithoutRetryOrCacheReuse(): void
     {

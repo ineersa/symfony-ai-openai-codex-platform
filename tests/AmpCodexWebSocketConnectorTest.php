@@ -7,13 +7,16 @@ namespace Symfony\AI\Platform\Bridge\OpenAICodex\Tests;
 use Amp\Cancellation;
 use Amp\CancelledException;
 use Amp\DeferredCancellation;
+use Amp\DeferredFuture;
 use Amp\Http\Client\DelegateHttpClient;
 use Amp\Http\Client\HttpClient;
 use Amp\Http\Client\Request;
 use Amp\Http\Client\Response;
+use Amp\Socket;
 use Amp\TimeoutCancellation;
 use Amp\Websocket\Client\Rfc6455Connector;
 use PHPUnit\Framework\TestCase;
+use Revolt\EventLoop;
 use Symfony\AI\Platform\Bridge\OpenAICodex\AmpCodexWebSocketConnector;
 use Symfony\AI\Platform\Bridge\OpenAICodex\Tests\Support\PendingOperation;
 
@@ -21,6 +24,49 @@ use function Amp\async;
 
 final class AmpCodexWebSocketConnectorTest extends TestCase
 {
+    public function testRunCancellationClosesARealPendingHandshake(): void
+    {
+        $server = Socket\listen('127.0.0.1:0');
+        $ready = new DeferredFuture();
+        $peer = null;
+        $peerFuture = async(static function () use ($server, $ready, &$peer): void {
+            $peer = $server->accept(new TimeoutCancellation(2.0));
+            self::assertNotNull($peer);
+            $headers = '';
+            while (!str_contains($headers, "\r\n\r\n")) {
+                $chunk = $peer->read(new TimeoutCancellation(2.0));
+                self::assertNotNull($chunk);
+                $headers .= $chunk;
+            }
+            $ready->complete(); // Handshake has arrived; deliberately send no response.
+        });
+        $safety = EventLoop::delay(2.0, static function () use (&$peer, $server): void {
+            $peer?->close();
+            $server->close();
+        });
+        $source = new DeferredCancellation();
+        $connector = new AmpCodexWebSocketConnector();
+        $future = async(static fn () => $connector->connect('ws://'.$server->getAddress().'/responses', [], 120.0, $source->getCancellation()));
+        try {
+            $ready->getFuture()->await(new TimeoutCancellation(2.0));
+            $this->assertFalse($future->isComplete());
+            $source->cancel();
+            try {
+                $future->await(new TimeoutCancellation(2.0));
+                $this->fail('Expected run cancellation.');
+            } catch (CancelledException) {
+                $this->assertNotNull($peer);
+                $this->assertNull($peer->read(new TimeoutCancellation(2.0)), 'Cancelling the handshake must release its socket.');
+            }
+        } finally {
+            EventLoop::cancel($safety);
+            $source->cancel();
+            $peer?->close();
+            $server->close();
+            \Amp\Future\awaitAll([$future, $peerFuture]);
+        }
+    }
+
     public function testCancellationInterruptsPendingHandshakeWithoutMappingItToTimeout(): void
     {
         $pending = new PendingOperation();

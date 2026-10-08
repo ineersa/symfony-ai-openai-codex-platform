@@ -9,9 +9,15 @@ use Amp\ByteStream\ReadableStream;
 use Amp\Cancellation;
 use Amp\CancelledException;
 use Amp\DeferredCancellation;
+use Amp\DeferredFuture;
+use Amp\Http\Client\Request;
+use Amp\Http\Client\Response;
 use Amp\Pipeline\Queue;
+use Amp\Socket;
 use Amp\TimeoutCancellation;
+use Amp\Websocket\Client\Rfc6455Connection;
 use Amp\Websocket\Client\WebsocketConnection;
+use Amp\Websocket\Rfc6455Client;
 use Amp\Websocket\WebsocketCloseInfo;
 use Amp\Websocket\WebsocketMessage;
 use PHPUnit\Framework\TestCase;
@@ -33,6 +39,70 @@ use function Amp\async;
 
 final class RawWebSocketResultTest extends TestCase
 {
+    #[\PHPUnit\Framework\Attributes\DataProvider('pendingCancellationCases')]
+    public function testRunCancellationInterruptsRealAmpSocketWait(bool $buffer, bool $partial): void
+    {
+        [$socket, $peer] = Socket\createSocketPair();
+        $connection = new Rfc6455Connection(
+            new Rfc6455Client($socket, true, closePeriod: 0.05),
+            new Response('1.1', 101, null, [], null, new Request('ws://localhost/responses')),
+        );
+        $source = new DeferredCancellation();
+        $ready = new DeferredFuture();
+        $subscriptions = 0;
+        // Each message first subscribes receive(), then buffer(). Complete the
+        // barrier on the silent operation's subscription. Its fiber reaches the
+        // real Amp socket/fragment wait before the queued observer can resume.
+        $target = ($partial ? 2 : 0) + ($buffer ? 2 : 1);
+        $cancellation = $this->createStub(Cancellation::class);
+        $cancellation->method('subscribe')->willReturnCallback(static function (\Closure $callback) use ($source, $ready, &$subscriptions, $target): string {
+            $id = $source->getCancellation()->subscribe($callback);
+            if ($target === ++$subscriptions) {
+                $ready->complete();
+            }
+
+            return $id;
+        });
+        $cancellation->method('unsubscribe')->willReturnCallback($source->getCancellation()->unsubscribe(...));
+        $cancellation->method('isRequested')->willReturnCallback($source->getCancellation()->isRequested(...));
+        $cancellation->method('throwIfRequested')->willReturnCallback($source->getCancellation()->throwIfRequested(...));
+        if ($partial) {
+            $payload = '{"type":"response.output_text.delta","delta":"partial"}';
+            $peer->write("\x81".\chr(\strlen($payload)).$payload);
+        }
+        if ($buffer) {
+            // A non-final text frame leaves message buffering waiting for a continuation.
+            $peer->write("\x01\x01{");
+        }
+        $raw = new RawWebSocketResult($connection, 120.0, cancellation: $cancellation);
+        $events = [];
+        $safety = EventLoop::delay(2.0, $peer->close(...));
+        $future = async(static function () use ($raw, &$events): void {
+            foreach ($raw->getDataStream() as $event) {
+                $events[] = $event;
+            }
+        });
+        try {
+            $ready->getFuture()->await(new TimeoutCancellation(2.0));
+            $this->assertCount($partial ? 1 : 0, $events);
+            $this->assertFalse($future->isComplete());
+            $source->cancel();
+            try {
+                $future->await(new TimeoutCancellation(2.0));
+                $this->fail('Expected run cancellation.');
+            } catch (CancelledException) {
+                $this->assertTrue($connection->isClosed());
+                $this->assertTrue($socket->isClosed());
+            }
+        } finally {
+            EventLoop::cancel($safety);
+            $peer->close();
+            $socket->close();
+            $raw->abort();
+            \Amp\Future\awaitAll([$future]);
+        }
+    }
+
     #[\PHPUnit\Framework\Attributes\DataProvider('pendingCancellationCases')]
     public function testRunCancellationInterruptsPendingIoAndInvalidatesCache(bool $buffer, bool $partial): void
     {
