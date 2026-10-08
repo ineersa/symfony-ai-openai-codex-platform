@@ -4,8 +4,11 @@ declare(strict_types=1);
 
 namespace Symfony\AI\Platform\Bridge\OpenAICodex;
 
+use Amp\Cancellation;
 use Amp\CancelledException;
+use Amp\CompositeCancellation;
 use Amp\Http\HttpStatus;
+use Amp\NullCancellation;
 use Amp\TimeoutCancellation;
 use Amp\Websocket\Client\WebsocketConnectException;
 use Amp\Websocket\Client\WebsocketConnection;
@@ -21,6 +24,9 @@ use function Amp\async;
 
 final class CodexWebSocketModelClient implements ModelClientInterface
 {
+    /** Optional Amp cancellation for this invocation; never sent to the provider. */
+    public const string CANCELLATION = 'codex_cancellation';
+
     private const float DEFAULT_CONNECT_TIMEOUT_SECONDS = 30.0;
     private const float DEFAULT_IDLE_TIMEOUT_SECONDS = 120.0;
 
@@ -61,6 +67,12 @@ final class CodexWebSocketModelClient implements ModelClientInterface
             throw new InvalidArgumentException(\sprintf('Payload must be an array, but a string was given to "%s".', self::class));
         }
 
+        $cancellation = $options[self::CANCELLATION] ?? null;
+        if (null !== $cancellation && !$cancellation instanceof Cancellation) {
+            throw new InvalidArgumentException('codex_cancellation must implement Amp\\Cancellation.');
+        }
+        $cancellation?->throwIfRequested();
+
         $resolution = CodexCorrelationRequestId::resolve($options, $payload);
         $websocketUrl = $this->urlResolver->resolve($this->baseUrl, $this->responsesPath);
 
@@ -70,6 +82,7 @@ final class CodexWebSocketModelClient implements ModelClientInterface
             $options,
             $resolution,
             $websocketUrl,
+            $cancellation,
         );
 
         $this->logRequestSummary($model, $wireBody, $websocketUrl, $lease);
@@ -78,14 +91,14 @@ final class CodexWebSocketModelClient implements ModelClientInterface
             array_merge($wireBody, ['type' => 'response.create']),
             \JSON_THROW_ON_ERROR | \JSON_UNESCAPED_SLASHES | \JSON_UNESCAPED_UNICODE,
         );
-        $this->sendRequestFrame($connection, $frame, $lease);
+        $this->sendRequestFrame($connection, $frame, $lease, $cancellation);
 
         $cachedContext = null;
         if (CodexTransportEnum::WebsocketCached === $this->transport && null !== $this->connectionCache && null !== $lease && $lease->cached && !$lease->oneShot) {
             $cachedContext = new CodexWebSocketCachedStreamContext($this->connectionCache, $lease, $fullBody);
         }
 
-        return new RawWebSocketResult($connection, $this->idleTimeoutSeconds, $this->logger, cachedStreamContext: $cachedContext);
+        return new RawWebSocketResult($connection, $this->idleTimeoutSeconds, $this->logger, cachedStreamContext: $cachedContext, cancellation: $cancellation);
     }
 
     /**
@@ -101,17 +114,22 @@ final class CodexWebSocketModelClient implements ModelClientInterface
         WebsocketConnection $connection,
         string $frame,
         ?CodexWebSocketCacheLease $lease,
+        ?Cancellation $cancellation,
     ): void {
-        $sendFuture = async(static function () use ($connection, $frame): void {
+        $sendFuture = async(static function () use ($connection, $frame, $cancellation): void {
+            $cancellation?->throwIfRequested();
             $connection->sendText($frame);
         });
 
         try {
-            $sendFuture->await(new TimeoutCancellation($this->idleTimeoutSeconds));
+            $timeout = new TimeoutCancellation($this->idleTimeoutSeconds);
+            $sendFuture->await(new CompositeCancellation($cancellation ?? new NullCancellation(), $timeout));
         } catch (CancelledException $e) {
-            $this->failOutboundTransport($connection, $lease, 'send_timeout');
-            // Observe the child future so a late write error is not unhandled after close.
-            $sendFuture->ignore();
+            $this->failOutboundTransport($connection, $lease, $cancellation?->isRequested() ? 'send_cancelled' : 'send_timeout');
+            // Closing wakes the blocked writer. Join it before releasing this invocation;
+            // awaitAll observes its close error without replacing the cancellation cause.
+            \Amp\Future\awaitAll([$sendFuture]);
+            $cancellation?->throwIfRequested();
 
             $this->logger->warning('codex.websocket.io_timeout', [
                 'event_type' => 'codex.websocket.io_timeout',
@@ -172,6 +190,7 @@ final class CodexWebSocketModelClient implements ModelClientInterface
         array $options,
         CodexCorrelationResolution $resolution,
         string $websocketUrl,
+        ?Cancellation $cancellation,
     ): array {
         [$bodyPayload, $bodyOptions] = $this->normalizeBodyInputs($payload, $options, $resolution);
 
@@ -187,6 +206,7 @@ final class CodexWebSocketModelClient implements ModelClientInterface
                 $model,
                 $websocketUrl,
                 $resolution,
+                $cancellation,
             );
             $fullBody = $this->buildFullRequestBody($model, $bodyPayload, $bodyOptions, $effectiveRequestId, $effectiveProvenance);
 
@@ -208,11 +228,12 @@ final class CodexWebSocketModelClient implements ModelClientInterface
         $lease = $this->connectionCache->acquire(
             $identity,
             $this->cacheSettings,
-            function () use ($model, $websocketUrl, $resolution, &$effectiveRequestId, &$effectiveProvenance): WebsocketConnection {
+            function () use ($model, $websocketUrl, $resolution, $cancellation, &$effectiveRequestId, &$effectiveProvenance): WebsocketConnection {
                 [$connection, $effectiveRequestId, $effectiveProvenance] = $this->connectWithOptional401Refresh(
                     $model,
                     $websocketUrl,
                     $resolution,
+                    $cancellation,
                 );
 
                 return $connection;
@@ -341,6 +362,7 @@ final class CodexWebSocketModelClient implements ModelClientInterface
         Model $model,
         string $websocketUrl,
         CodexCorrelationResolution $resolution,
+        ?Cancellation $cancellation,
     ): array {
         $requestId = $resolution->id;
         try {
@@ -349,6 +371,7 @@ final class CodexWebSocketModelClient implements ModelClientInterface
                     $websocketUrl,
                     $this->buildHandshakeHeaders($requestId),
                     $this->connectTimeoutSeconds,
+                    $cancellation,
                 ),
                 $requestId,
                 $resolution->provenance,
@@ -378,6 +401,7 @@ final class CodexWebSocketModelClient implements ModelClientInterface
                         $websocketUrl,
                         $this->buildHandshakeHeaders($retryRequestId),
                         $this->connectTimeoutSeconds,
+                        $cancellation,
                     ),
                     $retryRequestId,
                     $resolution->provenance,

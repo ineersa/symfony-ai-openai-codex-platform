@@ -5,9 +5,19 @@ declare(strict_types=1);
 namespace Symfony\AI\Platform\Bridge\OpenAICodex\Tests;
 
 use Amp\ByteStream\ReadableIterableStream;
+use Amp\ByteStream\ReadableStream;
+use Amp\Cancellation;
 use Amp\CancelledException;
+use Amp\DeferredCancellation;
+use Amp\DeferredFuture;
+use Amp\Http\Client\Request;
+use Amp\Http\Client\Response;
 use Amp\Pipeline\Queue;
+use Amp\Socket;
+use Amp\TimeoutCancellation;
+use Amp\Websocket\Client\Rfc6455Connection;
 use Amp\Websocket\Client\WebsocketConnection;
+use Amp\Websocket\Rfc6455Client;
 use Amp\Websocket\WebsocketCloseInfo;
 use Amp\Websocket\WebsocketMessage;
 use PHPUnit\Framework\TestCase;
@@ -22,10 +32,162 @@ use Symfony\AI\Platform\Bridge\OpenAICodex\CodexWebSocketContinuationDecision;
 use Symfony\AI\Platform\Bridge\OpenAICodex\CodexWebSocketContinuationState;
 use Symfony\AI\Platform\Bridge\OpenAICodex\CodexWebSocketResultHandle;
 use Symfony\AI\Platform\Bridge\OpenAICodex\RawWebSocketResult;
+use Symfony\AI\Platform\Bridge\OpenAICodex\Tests\Support\PendingOperation;
 use Symfony\AI\Platform\Bridge\OpenAICodex\Tests\Support\TestLogger;
+
+use function Amp\async;
 
 final class RawWebSocketResultTest extends TestCase
 {
+    #[\PHPUnit\Framework\Attributes\DataProvider('pendingCancellationCases')]
+    public function testRunCancellationInterruptsRealAmpSocketWait(bool $buffer, bool $partial): void
+    {
+        [$socket, $peer] = Socket\createSocketPair();
+        $connection = new Rfc6455Connection(
+            new Rfc6455Client($socket, true, closePeriod: 0.05),
+            new Response('1.1', 101, null, [], null, new Request('ws://localhost/responses')),
+        );
+        $source = new DeferredCancellation();
+        $ready = new DeferredFuture();
+        $subscriptions = 0;
+        // Each message first subscribes receive(), then buffer(). Complete the
+        // barrier on the silent operation's subscription. Its fiber reaches the
+        // real Amp socket/fragment wait before the queued observer can resume.
+        $target = ($partial ? 2 : 0) + ($buffer ? 2 : 1);
+        $cancellation = $this->createStub(Cancellation::class);
+        $cancellation->method('subscribe')->willReturnCallback(static function (\Closure $callback) use ($source, $ready, &$subscriptions, $target): string {
+            $id = $source->getCancellation()->subscribe($callback);
+            if ($target === ++$subscriptions) {
+                $ready->complete();
+            }
+
+            return $id;
+        });
+        $cancellation->method('unsubscribe')->willReturnCallback($source->getCancellation()->unsubscribe(...));
+        $cancellation->method('isRequested')->willReturnCallback($source->getCancellation()->isRequested(...));
+        $cancellation->method('throwIfRequested')->willReturnCallback($source->getCancellation()->throwIfRequested(...));
+        if ($partial) {
+            $payload = '{"type":"response.output_text.delta","delta":"partial"}';
+            $peer->write("\x81".\chr(\strlen($payload)).$payload);
+        }
+        if ($buffer) {
+            // A non-final text frame leaves message buffering waiting for a continuation.
+            $peer->write("\x01\x01{");
+        }
+        $raw = new RawWebSocketResult($connection, 120.0, cancellation: $cancellation);
+        $events = [];
+        $safety = EventLoop::delay(2.0, $peer->close(...));
+        $future = async(static function () use ($raw, &$events): void {
+            foreach ($raw->getDataStream() as $event) {
+                $events[] = $event;
+            }
+        });
+        try {
+            $ready->getFuture()->await(new TimeoutCancellation(2.0));
+            $this->assertCount($partial ? 1 : 0, $events);
+            $this->assertFalse($future->isComplete());
+            $source->cancel();
+            try {
+                $future->await(new TimeoutCancellation(2.0));
+                $this->fail('Expected run cancellation.');
+            } catch (CancelledException) {
+                $this->assertTrue($connection->isClosed());
+                $this->assertTrue($socket->isClosed());
+            }
+        } finally {
+            EventLoop::cancel($safety);
+            $peer->close();
+            $socket->close();
+            $raw->abort();
+            \Amp\Future\awaitAll([$future]);
+        }
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('pendingCancellationCases')]
+    public function testRunCancellationInterruptsPendingIoAndInvalidatesCache(bool $buffer, bool $partial): void
+    {
+        $pending = new PendingOperation();
+        $source = new DeferredCancellation();
+        $connection = $this->createMock(WebsocketConnection::class);
+        $connection->expects($this->once())->method('close');
+        $received = 0;
+        $fragment = $this->createStub(ReadableStream::class);
+        $reads = 0;
+        $fragment->method('read')->willReturnCallback(static function (?Cancellation $cancellation) use ($pending, &$reads): ?string {
+            if (0 === $reads++) {
+                return '{';
+            }
+            $pending->wait($cancellation);
+
+            return null;
+        });
+        $connection->method('receive')->willReturnCallback(static function (?Cancellation $cancellation) use ($pending, $fragment, $buffer, $partial, &$received): ?WebsocketMessage {
+            if ($partial && 0 === $received++) {
+                return WebsocketMessage::fromText('{"type":"response.output_text.delta","delta":"partial"}');
+            }
+            if ($buffer) {
+                return WebsocketMessage::fromText($fragment);
+            }
+            $pending->wait($cancellation);
+
+            return null;
+        });
+
+        $cache = new CodexWebSocketConnectionCache();
+        $identity = CodexWebSocketCompatibilityFingerprint::fromContext(
+            '0194dddd-bbbb-7ccc-8ddd-dddddddddddd', 'openai-codex', 'gpt-5.6-luna',
+            'https://chatgpt.com/backend-api', '/codex/responses', 'acct-1',
+        );
+        $settings = new CodexWebSocketCacheSettings();
+        $lease = $cache->acquire($identity, $settings, static fn () => $connection);
+        $this->assertNotNull($lease->entry);
+        $lease->entry->continuation = CodexWebSocketContinuationState::fromSuccessfulResponse(['input' => []], 'resp-old', []);
+        $logger = new TestLogger();
+        $raw = new RawWebSocketResult(
+            $connection, 120.0, $logger,
+            cachedStreamContext: new CodexWebSocketCachedStreamContext($cache, $lease, ['input' => []]),
+            cancellation: $source->getCancellation(),
+        );
+        $events = [];
+        $future = async(static function () use ($raw, &$events): void {
+            foreach ($raw->getDataStream() as $event) {
+                $events[] = $event;
+            }
+        });
+        try {
+            $pending->ready->getFuture()->await(new TimeoutCancellation(2.0));
+            $this->assertCount($partial ? 1 : 0, $events);
+            $source->cancel();
+            try {
+                $future->await(new TimeoutCancellation(2.0));
+                $this->fail('Expected run cancellation.');
+            } catch (CancelledException) {
+                $this->assertTrue($pending->finished);
+                $this->assertNull($lease->entry->continuation);
+            }
+            $this->assertSame([], array_filter($logger->records, static fn (array $record): bool => 'codex.websocket.io_timeout' === $record['message']));
+            $fresh = $this->createMock(WebsocketConnection::class);
+            $fresh->expects($this->once())->method('close');
+            $replacement = $cache->acquire($identity, $settings, static fn () => $fresh);
+            $this->assertSame($fresh, $replacement->connection);
+            $this->assertFalse($replacement->reused);
+        } finally {
+            $pending->close();
+            $raw->abort();
+            \Amp\Future\awaitAll([$future]);
+            $cache->closeAll();
+        }
+    }
+
+    /** @return iterable<string, array{bool, bool}> */
+    public static function pendingCancellationCases(): iterable
+    {
+        yield 'receive before first delta' => [false, false];
+        yield 'receive between deltas' => [false, true];
+        yield 'fragment buffer before first delta' => [true, false];
+        yield 'fragment buffer between deltas' => [true, true];
+    }
+
     public function testStreamsDecodedEventsAndClosesAfterTerminalWithoutExtraReceive(): void
     {
         $messages = [

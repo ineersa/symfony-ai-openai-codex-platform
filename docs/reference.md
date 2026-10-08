@@ -36,6 +36,10 @@ Each `CodexWebSocketConnectionCache` holds its own connections. It checks the pr
 
 `Result\CancellableRawResultInterface::abort(): void` is the host cancellation contract. `RawWebSocketResult` implements it. Abandoning or failing a stream invalidates its cached entry. A completed stream can retain its connection for compatible continuation.
 
+Pass an `Amp\Cancellation` in the `CodexWebSocketModelClient::CANCELLATION` request option (`codex_cancellation`) to interrupt pending WebSocket connect, send, receive, and message buffering. The bridge consumes this option before serialization. Run cancellation propagates as `Amp\CancelledException`, not an I/O timeout. Cancelling a send closes the socket and joins the writer without retrying the request. Cancellation invalidates cached connections and their continuation state.
+
+Custom `CodexWebSocketConnectorInterface` implementations must accept the fourth argument, `?Amp\Cancellation $cancellation = null`, and pass it to their pending connection operation. Hosts own their cancellation source and must release polling or subscription resources when the invocation ends.
+
 Structured transport logs omit raw prompts, tool content, and bearer tokens. `Error\ProviderErrorFormatter` bounds provider diagnostics. Provider error messages can still contain provider-supplied text.
 
 `CodexWebSocketContinuationMismatchException::diagnostics` carries the two rejected items for a `prefix_mismatch`, with the existing structural diagnostics and `expected_source` set to `previous_request` or `previous_response`. It does not contain either full history. The host owns logging, redaction, and size limits. The exception message and SDK transport logs remain content-free. Item values can contain conversation text, tool arguments, credentials, or reasoning ciphertext; do not log them without redaction.
